@@ -30,11 +30,18 @@ impl Handler {
 #[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for Handler {
     fn tool_name(&self) -> ToolName {
-        ToolName::plain("wait_agent")
+        ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, "wait_agent")
     }
 
-    fn spec(&self) -> Option<ToolSpec> {
-        Some(create_wait_agent_tool_v1(self.options))
+    fn spec(&self) -> ToolSpec {
+        create_wait_agent_tool_v1(self.options)
+    }
+
+    fn search_info(&self) -> Option<ToolSearchInfo> {
+        multi_agent_tool_search_info(
+            "wait_agent wait agent subagent status final result complete timeout targets",
+            self.spec(),
+        )
     }
 
     async fn handle(
@@ -89,7 +96,7 @@ impl ToolExecutor<ToolInvocation> for Handler {
                 &turn,
                 CollabWaitingBeginEvent {
                     started_at_ms: now_unix_timestamp_ms(),
-                    sender_thread_id: session.conversation_id,
+                    sender_thread_id: session.thread_id,
                     receiver_thread_ids: receiver_thread_ids.clone(),
                     receiver_agents: receiver_agents.clone(),
                     call_id: call_id.clone(),
@@ -119,7 +126,7 @@ impl ToolExecutor<ToolInvocation> for Handler {
                         .send_event(
                             &turn,
                             CollabWaitingEndEvent {
-                                sender_thread_id: session.conversation_id,
+                                sender_thread_id: session.thread_id,
                                 call_id: call_id.clone(),
                                 completed_at_ms: now_unix_timestamp_ms(),
                                 agent_statuses: build_wait_agent_statuses(
@@ -188,7 +195,7 @@ impl ToolExecutor<ToolInvocation> for Handler {
             .send_event(
                 &turn,
                 CollabWaitingEndEvent {
-                    sender_thread_id: session.conversation_id,
+                    sender_thread_id: session.thread_id,
                     call_id,
                     completed_at_ms: now_unix_timestamp_ms(),
                     agent_statuses,

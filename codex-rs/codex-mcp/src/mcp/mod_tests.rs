@@ -1,7 +1,6 @@
 use super::*;
 use codex_config::Constrained;
 use codex_config::types::AppToolApproval;
-use codex_config::types::ApprovalsReviewer;
 use codex_login::CodexAuth;
 use codex_plugin::AppConnectorId;
 use codex_plugin::PluginCapabilitySummary;
@@ -28,8 +27,10 @@ fn test_mcp_config(codex_home: PathBuf) -> McpConfig {
         codex_linux_sandbox_exe: None,
         use_legacy_landlock: false,
         apps_enabled: false,
+        prefix_mcp_tool_names: true,
         client_elicitation_capability: ElicitationCapability::default(),
         configured_mcp_servers: HashMap::new(),
+        plugin_ids_by_mcp_server_name: HashMap::new(),
         plugin_capability_summaries: Vec::new(),
     }
 }
@@ -94,7 +95,6 @@ fn mcp_prompt_auto_approval_honors_approved_tools_in_all_permission_modes() {
             approval_policy,
             &PermissionProfile::read_only(),
             McpPermissionPromptAutoApproveContext {
-                approvals_reviewer: Some(ApprovalsReviewer::User),
                 tool_approval_mode: Some(AppToolApproval::Approve),
             },
         ));
@@ -104,7 +104,6 @@ fn mcp_prompt_auto_approval_honors_approved_tools_in_all_permission_modes() {
         AskForApproval::OnRequest,
         &PermissionProfile::read_only(),
         McpPermissionPromptAutoApproveContext {
-            approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
             tool_approval_mode: Some(AppToolApproval::Auto),
         },
     ));
@@ -116,7 +115,6 @@ fn mcp_prompt_auto_approval_rejects_auto_mode_in_default_permission_mode() {
         AskForApproval::OnRequest,
         &PermissionProfile::read_only(),
         McpPermissionPromptAutoApproveContext {
-            approvals_reviewer: Some(ApprovalsReviewer::User),
             tool_approval_mode: Some(AppToolApproval::Auto),
         },
     ));
@@ -124,7 +122,10 @@ fn mcp_prompt_auto_approval_rejects_auto_mode_in_default_permission_mode() {
 
 #[test]
 fn tool_plugin_provenance_collects_app_and_mcp_sources() {
-    let provenance = ToolPluginProvenance::from_capability_summaries(&[
+    let mut config = test_mcp_config(PathBuf::new());
+    config.plugin_ids_by_mcp_server_name =
+        HashMap::from([("alpha".to_string(), "alpha@test".to_string())]);
+    config.plugin_capability_summaries = vec![
         PluginCapabilitySummary {
             display_name: "alpha-plugin".to_string(),
             app_connector_ids: vec![AppConnectorId("connector_example".to_string())],
@@ -140,7 +141,8 @@ fn tool_plugin_provenance_collects_app_and_mcp_sources() {
             mcp_server_names: vec!["beta".to_string()],
             ..PluginCapabilitySummary::default()
         },
-    ]);
+    ];
+    let provenance = tool_plugin_provenance(&config);
 
     assert_eq!(
         provenance,
@@ -159,8 +161,17 @@ fn tool_plugin_provenance_collects_app_and_mcp_sources() {
                 ("alpha".to_string(), vec!["alpha-plugin".to_string()]),
                 ("beta".to_string(), vec!["beta-plugin".to_string()]),
             ]),
+            plugin_ids_by_mcp_server_name: HashMap::from([(
+                "alpha".to_string(),
+                "alpha@test".to_string(),
+            )]),
         }
     );
+    assert_eq!(
+        provenance.plugin_id_for_mcp_server_name("alpha"),
+        Some("alpha@test")
+    );
+    assert_eq!(provenance.plugin_id_for_mcp_server_name("beta"), None);
 }
 
 #[test]
@@ -302,7 +313,7 @@ async fn effective_mcp_servers_preserve_user_servers_and_add_codex_apps() {
                 http_headers: None,
                 env_http_headers: None,
             },
-            experimental_environment: None,
+            environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
             enabled: true,
             required: false,
             supports_parallel_tool_calls: false,
@@ -327,7 +338,7 @@ async fn effective_mcp_servers_preserve_user_servers_and_add_codex_apps() {
                 http_headers: None,
                 env_http_headers: None,
             },
-            experimental_environment: None,
+            environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
             enabled: true,
             required: false,
             supports_parallel_tool_calls: false,

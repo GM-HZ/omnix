@@ -1,76 +1,74 @@
-# OpenAI Codex Python SDK (Experimental)
+# OpenAI Codex Python SDK (Beta)
 
-Experimental Python SDK for `codex app-server` JSON-RPC v2 over stdio, with a small default surface optimized for real scripts and apps.
-
-The generated wire-model layer is sourced from the pinned `openai-codex-cli-bin`
-runtime package and exposed as Pydantic models with snake_case Python fields
-that serialize back to the app-server’s camelCase wire format.
-The package root exports the ergonomic client API; public app-server value and
-event types live in `openai_codex.types`.
+Build Python applications that start Codex threads, run turns, stream progress,
+and control workspace access.
 
 ## Install
 
+Install the SDK:
+
 ```bash
-cd sdk/python
-uv sync
-source .venv/bin/activate
+pip install openai-codex
 ```
 
-Published SDK builds pin an exact `openai-codex-cli-bin` runtime dependency
-with the same version as the SDK. Pass `AppServerConfig(codex_bin=...)` only
-when you intentionally want to run against a specific local app-server binary.
-
 ## Quickstart
+
+The SDK reuses your existing Codex authentication when one is already
+available:
 
 ```python
 from openai_codex import Codex
 
 with Codex() as codex:
-    thread = codex.thread_start(model="gpt-5")
-    result = thread.run("Say hello in one sentence.")
+    thread = codex.thread_start()
+    result = thread.run("Explain this repository in three bullets.")
     print(result.final_response)
-    print(len(result.items))
 ```
 
-`result.final_response` is `None` when the turn completes without a final-answer
-or phase-less assistant message item.
+`thread.run(...)` returns a `TurnResult` containing the final response,
+collected items, and token usage.
 
-## Docs map
+## Authentication
 
-- Golden path tutorial: `docs/getting-started.md`
-- API reference (signatures + behavior): `docs/api-reference.md`
-- Common decisions and pitfalls: `docs/faq.md`
-- Runnable examples index: `examples/README.md`
-- Jupyter walkthrough notebook: `notebooks/sdk_walkthrough.ipynb`
+Existing Codex authentication is reused automatically. To start ChatGPT
+browser login explicitly:
 
-## Examples
+```python
+from openai_codex import Codex
 
-Start here:
-
-```bash
-cd sdk/python
-python examples/01_quickstart_constructor/sync.py
-python examples/01_quickstart_constructor/async.py
+with Codex() as codex:
+    login = codex.login_chatgpt()
+    print(login.auth_url)
+    print(login.wait().success)
 ```
 
-## Runtime
+For device-code login:
 
-Published SDK builds are pinned to an exact `openai-codex-cli-bin` package
-version, and that runtime package carries the platform-specific binary for the
-target wheel. The SDK package version and runtime package version must match.
+```python
+with Codex() as codex:
+    login = codex.login_chatgpt_device_code()
+    print(login.verification_url, login.user_code)
+    login.wait()
+```
 
-## Compatibility and versioning
+For API-key login:
 
-- Package: `openai-codex`
-- Runtime package: `openai-codex-cli-bin`
-- Python: `>=3.10`
-- Target protocol: Codex `app-server` JSON-RPC v2
-- Versioning rule: the SDK package version is the underlying Codex runtime version
+```python
+with Codex() as codex:
+    codex.login_api_key("sk-...")
+```
 
-## Notes
+## Built-In Help
 
-- `Codex()` is eager and performs startup + `initialize` in the constructor.
-- Use context managers (`with Codex() as codex:`) to ensure shutdown.
-- Prefer `thread.run("...")` for the common case. Use `thread.turn(...)` when
-  you need streaming, steering, or interrupt control.
-- For transient overload, use `retry_on_overload` from the package root.
+Use Python's standard `help(openai_codex)`, `help(Codex)`, or
+`python -m pydoc openai_codex` documentation tools.
+
+## Documentation
+
+- [Getting started](https://github.com/openai/codex/blob/main/sdk/python/docs/getting-started.md)
+- [API reference](https://github.com/openai/codex/blob/main/sdk/python/docs/api-reference.md)
+- [FAQ](https://github.com/openai/codex/blob/main/sdk/python/docs/faq.md)
+- [Examples](https://github.com/openai/codex/blob/main/sdk/python/examples/README.md)
+
+The package is licensed under the
+[repository Apache License 2.0](https://github.com/openai/codex/blob/main/LICENSE).

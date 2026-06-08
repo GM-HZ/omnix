@@ -72,7 +72,6 @@ async fn experimental_mode_plan_is_ignored_on_startup() {
     let session_telemetry = test_session_telemetry(&cfg, resolved_model.as_str());
     let init = ChatWidgetInit {
         config: cfg.clone(),
-        environment_manager: Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         frame_requester: FrameRequester::test_dummy(),
         app_event_tx: AppEventSender::new(unbounded_channel::<AppEvent>().0),
         workspace_command_runner: None,
@@ -334,16 +333,7 @@ async fn plugins_popup_add_marketplace_tab_opens_prompt_and_submits_source() {
         "expected marketplace source prompt, got:\n{prompt}"
     );
 
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+    chat.handle_paste("owner/repo".to_string());
     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
 
     match rx.try_recv() {
@@ -1401,6 +1391,77 @@ async fn apps_popup_stays_loading_until_final_snapshot_updates() {
 }
 
 #[tokio::test]
+async fn apps_notification_update_excludes_inaccessible_apps_from_mentions() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    set_chatgpt_auth(&mut chat);
+    chat.config
+        .features
+        .enable(Feature::Apps)
+        .expect("test config should allow feature update");
+    chat.bottom_pane.set_connectors_enabled(/*enabled*/ true);
+    chat.bottom_pane
+        .set_composer_text("$".to_string(), Vec::new(), Vec::new());
+
+    chat.on_connectors_loaded(
+        Ok(ConnectorsSnapshot {
+            connectors: vec![
+                AppInfo {
+                    id: "google_drive".to_string(),
+                    name: "Google Drive".to_string(),
+                    description: Some("Connected files".to_string()),
+                    logo_url: None,
+                    logo_url_dark: None,
+                    distribution_channel: None,
+                    branding: None,
+                    app_metadata: None,
+                    labels: None,
+                    install_url: Some("https://example.test/google-drive".to_string()),
+                    is_accessible: true,
+                    is_enabled: true,
+                    plugin_display_names: Vec::new(),
+                },
+                AppInfo {
+                    id: "arabica_uae".to_string(),
+                    name: "% Arabica UAE".to_string(),
+                    description: Some("Directory-only app".to_string()),
+                    logo_url: None,
+                    logo_url_dark: None,
+                    distribution_channel: None,
+                    branding: None,
+                    app_metadata: None,
+                    labels: None,
+                    install_url: Some("https://example.test/arabica".to_string()),
+                    is_accessible: false,
+                    is_enabled: true,
+                    plugin_display_names: Vec::new(),
+                },
+            ],
+        }),
+        /*is_final*/ false,
+    );
+
+    assert_matches!(
+        &chat.connectors.partial_snapshot,
+        Some(snapshot)
+            if snapshot
+                .connectors
+                .iter()
+                .find(|connector| connector.id == "arabica_uae")
+                .is_some_and(|connector| !connector.is_accessible)
+    );
+
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(
+        popup.contains("Google Drive"),
+        "expected accessible apps to appear in the mention popup, got:\n{popup}"
+    );
+    assert!(
+        !popup.contains("% Arabica UAE"),
+        "did not expect an inaccessible directory app in the mention popup, got:\n{popup}"
+    );
+}
+
+#[tokio::test]
 async fn apps_refresh_failure_keeps_existing_full_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     set_chatgpt_auth(&mut chat);
@@ -1860,198 +1921,6 @@ async fn apps_popup_shows_disabled_status_for_installed_but_disabled_apps() {
 }
 
 #[tokio::test]
-async fn apps_initial_load_applies_enabled_state_from_config() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    set_chatgpt_auth(&mut chat);
-    chat.config
-        .features
-        .enable(Feature::Apps)
-        .expect("test config should allow feature update");
-    chat.bottom_pane.set_connectors_enabled(/*enabled*/ true);
-
-    let temp = tempdir().expect("tempdir");
-    let config_toml_path = temp.path().join("config.toml").abs();
-    let user_config = toml::from_str::<TomlValue>(
-        "[apps.connector_1]\nenabled = false\ndisabled_reason = \"user\"\n",
-    )
-    .expect("apps config");
-    chat.config.config_layer_stack = chat
-        .config
-        .config_layer_stack
-        .with_user_config(&config_toml_path, user_config);
-
-    chat.on_connectors_loaded(
-        Ok(ConnectorsSnapshot {
-            connectors: vec![AppInfo {
-                id: "connector_1".to_string(),
-                name: "Notion".to_string(),
-                description: Some("Workspace docs".to_string()),
-                logo_url: None,
-                logo_url_dark: None,
-                distribution_channel: None,
-                branding: None,
-                app_metadata: None,
-                labels: None,
-                install_url: Some("https://example.test/notion".to_string()),
-                is_accessible: true,
-                is_enabled: true,
-                plugin_display_names: Vec::new(),
-            }],
-        }),
-        /*is_final*/ true,
-    );
-
-    assert_matches!(
-        &chat.connectors.cache,
-        ConnectorsCacheState::Ready(snapshot)
-            if snapshot
-                .connectors
-                .iter()
-                .find(|connector| connector.id == "connector_1")
-                .is_some_and(|connector| !connector.is_enabled)
-    );
-}
-
-#[tokio::test]
-async fn apps_initial_load_applies_enabled_state_from_requirements_with_user_override() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    set_chatgpt_auth(&mut chat);
-    chat.config
-        .features
-        .enable(Feature::Apps)
-        .expect("test config should allow feature update");
-    chat.bottom_pane.set_connectors_enabled(/*enabled*/ true);
-
-    let requirements = ConfigRequirementsToml {
-        apps: Some(AppsRequirementsToml {
-            apps: BTreeMap::from([(
-                "connector_1".to_string(),
-                AppRequirementToml {
-                    enabled: Some(false),
-                    tools: None,
-                },
-            )]),
-        }),
-        ..Default::default()
-    };
-    let temp = tempdir().expect("tempdir");
-    let config_toml_path = temp.path().join("config.toml").abs();
-    chat.config.config_layer_stack =
-        ConfigLayerStack::new(Vec::new(), ConfigRequirements::default(), requirements)
-            .expect("requirements stack")
-            .with_user_config(
-                &config_toml_path,
-                toml::from_str::<TomlValue>(
-                    "[apps.connector_1]\nenabled = true\ndisabled_reason = \"user\"\n",
-                )
-                .expect("apps config"),
-            );
-
-    chat.on_connectors_loaded(
-        Ok(ConnectorsSnapshot {
-            connectors: vec![AppInfo {
-                id: "connector_1".to_string(),
-                name: "Notion".to_string(),
-                description: Some("Workspace docs".to_string()),
-                logo_url: None,
-                logo_url_dark: None,
-                distribution_channel: None,
-                branding: None,
-                app_metadata: None,
-                labels: None,
-                install_url: Some("https://example.test/notion".to_string()),
-                is_accessible: true,
-                is_enabled: true,
-                plugin_display_names: Vec::new(),
-            }],
-        }),
-        /*is_final*/ true,
-    );
-
-    assert_matches!(
-        &chat.connectors.cache,
-        ConnectorsCacheState::Ready(snapshot)
-            if snapshot
-                .connectors
-                .iter()
-                .find(|connector| connector.id == "connector_1")
-                .is_some_and(|connector| !connector.is_enabled)
-    );
-
-    chat.add_connectors_output();
-    let popup = render_bottom_popup(&chat, /*width*/ 80);
-    assert!(
-        popup.contains("Installed · Disabled. Press Enter to open the app page"),
-        "expected requirements-disabled connector to render as disabled, got:\n{popup}"
-    );
-}
-
-#[tokio::test]
-async fn apps_initial_load_applies_enabled_state_from_requirements_without_user_entry() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    set_chatgpt_auth(&mut chat);
-    chat.config
-        .features
-        .enable(Feature::Apps)
-        .expect("test config should allow feature update");
-    chat.bottom_pane.set_connectors_enabled(/*enabled*/ true);
-
-    let requirements = ConfigRequirementsToml {
-        apps: Some(AppsRequirementsToml {
-            apps: BTreeMap::from([(
-                "connector_1".to_string(),
-                AppRequirementToml {
-                    enabled: Some(false),
-                    tools: None,
-                },
-            )]),
-        }),
-        ..Default::default()
-    };
-    chat.config.config_layer_stack =
-        ConfigLayerStack::new(Vec::new(), ConfigRequirements::default(), requirements)
-            .expect("requirements stack");
-
-    chat.on_connectors_loaded(
-        Ok(ConnectorsSnapshot {
-            connectors: vec![AppInfo {
-                id: "connector_1".to_string(),
-                name: "Notion".to_string(),
-                description: Some("Workspace docs".to_string()),
-                logo_url: None,
-                logo_url_dark: None,
-                distribution_channel: None,
-                branding: None,
-                app_metadata: None,
-                labels: None,
-                install_url: Some("https://example.test/notion".to_string()),
-                is_accessible: true,
-                is_enabled: true,
-                plugin_display_names: Vec::new(),
-            }],
-        }),
-        /*is_final*/ true,
-    );
-
-    assert_matches!(
-        &chat.connectors.cache,
-        ConnectorsCacheState::Ready(snapshot)
-            if snapshot
-                .connectors
-                .iter()
-                .find(|connector| connector.id == "connector_1")
-                .is_some_and(|connector| !connector.is_enabled)
-    );
-
-    chat.add_connectors_output();
-    let popup = render_bottom_popup(&chat, /*width*/ 80);
-    assert!(
-        popup.contains("Installed · Disabled. Press Enter to open the app page"),
-        "expected requirements-disabled connector to render as disabled, got:\n{popup}"
-    );
-}
-
-#[tokio::test]
 async fn apps_refresh_preserves_toggled_enabled_state() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     set_chatgpt_auth(&mut chat);
@@ -2322,7 +2191,7 @@ async fn memories_settings_popup_snapshot() {
 
     chat.open_memories_popup();
 
-    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    let popup = strip_osc8_for_snapshot(&render_bottom_popup(&chat, /*width*/ 80));
     assert_chatwidget_snapshot!("memories_settings_popup", popup);
 }
 
@@ -2472,6 +2341,7 @@ async fn model_picker_hides_show_in_picker_false_models_from_cache() {
         supports_personality: false,
         additional_speed_tiers: Vec::new(),
         service_tiers: Vec::new(),
+        default_service_tier: None,
         is_default: false,
         upgrade: None,
         show_in_picker,
@@ -2535,11 +2405,53 @@ async fn model_reasoning_selection_popup_snapshot() {
     set_chatgpt_auth(&mut chat);
     chat.set_reasoning_effort(Some(ReasoningEffortConfig::High));
 
-    let preset = get_available_model(&chat, "gpt-5.4");
+    let mut preset = get_available_model(&chat, "gpt-5.4");
+    preset.supported_reasoning_efforts.insert(
+        2,
+        ReasoningEffortPreset {
+            effort: ReasoningEffortConfig::Custom("max".to_string()),
+            description: "Maximum available reasoning".to_string(),
+        },
+    );
     chat.open_reasoning_popup(preset);
 
     let popup = render_bottom_popup(&chat, /*width*/ 80);
     assert_chatwidget_snapshot!("model_reasoning_selection_popup", popup);
+}
+
+#[tokio::test]
+async fn model_reasoning_selection_popup_applies_custom_effort() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+    let custom_effort = ReasoningEffortConfig::Custom("max".to_string());
+    chat.set_reasoning_effort(Some(ReasoningEffortConfig::XHigh));
+
+    let mut preset = get_available_model(&chat, "gpt-5.4");
+    preset
+        .supported_reasoning_efforts
+        .push(ReasoningEffortPreset {
+            effort: custom_effort.clone(),
+            description: "Maximum available reasoning".to_string(),
+        });
+    chat.open_reasoning_popup(preset);
+    while rx.try_recv().is_ok() {}
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    let selected_effort_events = std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|event| match event {
+            AppEvent::UpdateReasoningEffort(effort) => Some((None, effort)),
+            AppEvent::PersistModelSelection { model, effort } => Some((Some(model), effort)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        selected_effort_events,
+        vec![
+            (None, Some(custom_effort.clone())),
+            (Some("gpt-5.4".to_string()), Some(custom_effort)),
+        ]
+    );
 }
 
 #[tokio::test]
@@ -2556,58 +2468,67 @@ async fn model_reasoning_selection_popup_extra_high_warning_snapshot() {
     assert_chatwidget_snapshot!("model_reasoning_selection_popup_extra_high_warning", popup);
 }
 
-#[tokio::test]
-async fn alt_period_raises_reasoning_effort() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
-    chat.thread_id = Some(ThreadId::new());
-    chat.set_reasoning_effort(Some(ReasoningEffortConfig::Medium));
+async fn assert_reasoning_shortcuts_update_effort(
+    key_events: [KeyEvent; 2],
+    expected_effort: ReasoningEffortConfig,
+    expect_model_update: bool,
+) {
+    for key_event in key_events {
+        let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+        chat.thread_id = Some(ThreadId::new());
+        chat.set_reasoning_effort(Some(ReasoningEffortConfig::Medium));
 
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char('.'), KeyModifiers::ALT));
+        chat.handle_key_event(key_event);
 
-    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, AppEvent::UpdateModel(model) if model == "gpt-5.4")),
-        "expected model update event; events: {events:?}"
-    );
-    assert!(
-        events.iter().any(|event| matches!(
-            event,
-            AppEvent::UpdateReasoningEffort(Some(ReasoningEffortConfig::High))
-        )),
-        "expected reasoning update event; events: {events:?}"
-    );
-    assert!(
-        events
-            .iter()
-            .all(|event| !matches!(event, AppEvent::PersistModelSelection { .. })),
-        "expected no model persistence event; events: {events:?}"
-    );
+        let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        if expect_model_update {
+            assert!(
+                events.iter().any(
+                    |event| matches!(event, AppEvent::UpdateModel(model) if model == "gpt-5.4")
+                ),
+                "expected model update event for {key_event:?}; events: {events:?}"
+            );
+        }
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                AppEvent::UpdateReasoningEffort(Some(effort)) if effort == &expected_effort
+            )),
+            "expected reasoning update event for {key_event:?}; events: {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .all(|event| !matches!(event, AppEvent::PersistModelSelection { .. })),
+            "expected no model persistence event for {key_event:?}; events: {events:?}"
+        );
+    }
 }
 
 #[tokio::test]
-async fn alt_comma_lowers_reasoning_effort() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
-    chat.thread_id = Some(ThreadId::new());
-    chat.set_reasoning_effort(Some(ReasoningEffortConfig::Medium));
+async fn reasoning_up_shortcuts_raise_reasoning_effort() {
+    assert_reasoning_shortcuts_update_effort(
+        [
+            KeyEvent::new(KeyCode::Char('.'), KeyModifiers::ALT),
+            KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT),
+        ],
+        ReasoningEffortConfig::High,
+        /*expect_model_update*/ true,
+    )
+    .await;
+}
 
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char(','), KeyModifiers::ALT));
-
-    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-    assert!(
-        events.iter().any(|event| matches!(
-            event,
-            AppEvent::UpdateReasoningEffort(Some(ReasoningEffortConfig::Low))
-        )),
-        "expected reasoning update event; events: {events:?}"
-    );
-    assert!(
-        events
-            .iter()
-            .all(|event| !matches!(event, AppEvent::PersistModelSelection { .. })),
-        "expected no model persistence event; events: {events:?}"
-    );
+#[tokio::test]
+async fn reasoning_down_shortcuts_lower_reasoning_effort() {
+    assert_reasoning_shortcuts_update_effort(
+        [
+            KeyEvent::new(KeyCode::Char(','), KeyModifiers::ALT),
+            KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT),
+        ],
+        ReasoningEffortConfig::Low,
+        /*expect_model_update*/ false,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -2693,6 +2614,7 @@ async fn single_reasoning_option_skips_selection() {
         supports_personality: false,
         additional_speed_tiers: Vec::new(),
         service_tiers: Vec::new(),
+        default_service_tier: None,
         is_default: false,
         upgrade: None,
         show_in_picker: true,
@@ -2741,6 +2663,7 @@ async fn feedback_upload_consent_popup_snapshot() {
         crate::app_event::FeedbackCategory::Bug,
         chat.current_rollout_path.clone(),
         Some("auto-review-rollout-thread-1.jsonl".to_string()),
+        /*include_windows_sandbox_log*/ true,
         &codex_feedback::FeedbackDiagnostics::new(vec![codex_feedback::FeedbackDiagnostic {
             headline: "Proxy environment variables are set and may affect connectivity."
                 .to_string(),
@@ -2761,6 +2684,7 @@ async fn feedback_good_result_consent_popup_includes_connectivity_diagnostics_fi
         crate::app_event::FeedbackCategory::GoodResult,
         chat.current_rollout_path.clone(),
         Some("auto-review-rollout-thread-1.jsonl".to_string()),
+        /*include_windows_sandbox_log*/ false,
         &codex_feedback::FeedbackDiagnostics::new(vec![codex_feedback::FeedbackDiagnostic {
             headline: "Proxy environment variables are set and may affect connectivity."
                 .to_string(),

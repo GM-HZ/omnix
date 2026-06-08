@@ -112,6 +112,7 @@ pub(super) fn snapshot(percent: f64) -> RateLimitSnapshot {
         }),
         secondary: None,
         credits: None,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }
@@ -161,7 +162,6 @@ pub(super) async fn make_chatwidget_manual(
     let model_catalog = test_model_catalog(&cfg);
     let common = ChatWidgetInit {
         config: cfg,
-        environment_manager: Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         frame_requester: FrameRequester::test_dummy(),
         app_event_tx,
         workspace_command_runner: None,
@@ -209,7 +209,7 @@ pub(super) fn next_submit_op(op_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Op
 pub(super) fn next_interrupt_op(op_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Op>) {
     loop {
         match op_rx.try_recv() {
-            Ok(Op::Interrupt) => return,
+            Ok(Op::Interrupt { .. }) => return,
             Ok(_) => continue,
             Err(TryRecvError::Empty) => panic!("expected interrupt op but queue was empty"),
             Err(TryRecvError::Disconnected) => panic!("expected interrupt op but channel closed"),
@@ -247,15 +247,14 @@ pub(crate) fn set_chatgpt_auth(chat: &mut ChatWidget) {
 }
 
 fn test_model_info(slug: &str, priority: i32, supports_fast_mode: bool) -> ModelInfo {
-    let service_tiers = if supports_fast_mode {
-        vec![json!({
+    let mut service_tiers = Vec::new();
+    if supports_fast_mode {
+        service_tiers.push(json!({
             "id": ServiceTier::Fast.request_value(),
             "name": "fast",
             "description": "Fastest inference with increased plan usage"
-        })]
-    } else {
-        Vec::new()
-    };
+        }));
+    }
     serde_json::from_value(json!({
         "slug": slug,
         "display_name": slug,
@@ -268,6 +267,7 @@ fn test_model_info(slug: &str, priority: i32, supports_fast_mode: bool) -> Model
         "priority": priority,
         "additional_speed_tiers": [],
         "service_tiers": service_tiers,
+        "default_service_tier": null,
         "availability_nux": null,
         "upgrade": null,
         "base_instructions": "base instructions",
@@ -723,6 +723,7 @@ pub(super) fn replay_user_message_inputs(
     chat.replay_thread_item(
         AppServerThreadItem::UserMessage {
             id: item_id.to_string(),
+            client_id: None,
             content,
         },
         "turn-1".to_string(),
@@ -947,6 +948,7 @@ pub(super) fn complete_user_message_for_inputs(
             completed_at_ms: 0,
             item: AppServerThreadItem::UserMessage {
                 id: item_id.to_string(),
+                client_id: None,
                 content,
             },
         }),
@@ -1427,6 +1429,7 @@ pub(super) fn plugins_test_detail(
                 needs_auth: *needs_auth,
             })
             .collect(),
+        app_templates: Vec::new(),
         mcp_servers: mcp_servers.iter().map(|name| (*name).to_string()).collect(),
     }
 }
@@ -1572,6 +1575,8 @@ fn hook_event_label(event_name: codex_app_server_protocol::HookEventName) -> &'s
         codex_app_server_protocol::HookEventName::PostCompact => "PostCompact",
         codex_app_server_protocol::HookEventName::SessionStart => "SessionStart",
         codex_app_server_protocol::HookEventName::UserPromptSubmit => "UserPromptSubmit",
+        codex_app_server_protocol::HookEventName::SubagentStart => "SubagentStart",
+        codex_app_server_protocol::HookEventName::SubagentStop => "SubagentStop",
         codex_app_server_protocol::HookEventName::Stop => "Stop",
     }
 }
