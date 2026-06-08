@@ -477,7 +477,7 @@ async fn dropped_backpressured_response_stream_traces_cancelled_partial_output()
 fn auth_request_telemetry_context_tracks_attached_auth_and_retry_phase() {
     let auth_context = AuthRequestTelemetryContext::new(
         Some(AuthMode::Chatgpt),
-        &BearerAuthProvider::for_test(Some("access-token"), Some("workspace-123")),
+        &BearerAuthProvider::for_test(Some("access-token")),
         PendingUnauthorizedRetry::from_recovery(UnauthorizedRecoveryExecution {
             mode: "managed",
             phase: "refresh_token",

@@ -7,7 +7,6 @@
 
 use codex_api::Provider as ApiProvider;
 use codex_api::RetryConfig as ApiRetryConfig;
-use codex_api::is_azure_responses_provider;
 use codex_app_server_protocol::AuthMode;
 use codex_protocol::config_types::ModelProviderAuthInfo;
 use codex_protocol::error::CodexErr;
@@ -35,6 +34,9 @@ const MAX_REQUEST_MAX_RETRIES: u64 = 100;
 const OPENAI_PROVIDER_NAME: &str = "OpenAI";
 pub const OPENAI_PROVIDER_ID: &str = "openai";
 pub const CHATGPT_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
+const LOCAL_PROVIDER_NAME: &str = "Local Model Provider";
+pub const LOCAL_PROVIDER_ID: &str = "local";
+pub const LOCAL_DEFAULT_BASE_URL: &str = "http://localhost:11434/v1";
 const AMAZON_BEDROCK_PROVIDER_NAME: &str = "Amazon Bedrock";
 pub const AMAZON_BEDROCK_PROVIDER_ID: &str = "amazon-bedrock";
 pub const AMAZON_BEDROCK_GPT_5_5_MODEL_ID: &str = "openai.gpt-5.5";
@@ -234,24 +236,11 @@ impl ModelProviderInfo {
         Ok(headers)
     }
 
-    pub fn to_api_provider(&self, auth_mode: Option<AuthMode>) -> CodexResult<ApiProvider> {
-        let default_base_url = if matches!(
-            auth_mode,
-            Some(
-                AuthMode::Chatgpt
-                    | AuthMode::ChatgptAuthTokens
-                    | AuthMode::AgentIdentity
-                    | AuthMode::PersonalAccessToken
-            )
-        ) {
-            CHATGPT_CODEX_BASE_URL
-        } else {
-            "https://api.openai.com/v1"
-        };
+    pub fn to_api_provider(&self, _auth_mode: Option<AuthMode>) -> CodexResult<ApiProvider> {
         let base_url = self
             .base_url
             .clone()
-            .unwrap_or_else(|| default_base_url.to_string());
+            .unwrap_or_else(|| LOCAL_DEFAULT_BASE_URL.to_string());
 
         let headers = self.build_header_map()?;
         let retry = ApiRetryConfig {
@@ -358,6 +347,28 @@ impl ModelProviderInfo {
         }
     }
 
+    pub fn create_local_provider(base_url: Option<String>) -> ModelProviderInfo {
+        ModelProviderInfo {
+            name: LOCAL_PROVIDER_NAME.into(),
+            base_url: Some(base_url.unwrap_or_else(|| LOCAL_DEFAULT_BASE_URL.to_string())),
+            env_key: None,
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            auth: None,
+            aws: None,
+            wire_api: WireApi::Responses,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+        }
+    }
+
     pub fn create_amazon_bedrock_provider(
         aws: Option<ModelProviderAwsAuthInfo>,
     ) -> ModelProviderInfo {
@@ -397,7 +408,7 @@ impl ModelProviderInfo {
     }
 
     pub fn supports_remote_compaction(&self) -> bool {
-        self.is_openai() || is_azure_responses_provider(&self.name, self.base_url.as_deref())
+        false
     }
 
     pub fn has_command_auth(&self) -> bool {
@@ -413,19 +424,15 @@ pub const OLLAMA_OSS_PROVIDER_ID: &str = "ollama";
 
 /// Built-in default provider list.
 pub fn built_in_model_providers(
-    openai_base_url: Option<String>,
+    _openai_base_url: Option<String>,
 ) -> HashMap<String, ModelProviderInfo> {
     use ModelProviderInfo as P;
-    let openai_provider = P::create_openai_provider(openai_base_url);
-    let amazon_bedrock_provider = P::create_amazon_bedrock_provider(/*aws*/ None);
+    let local_provider = P::create_local_provider(/*base_url*/ None);
 
-    // We do not want to be in the business of adjucating which third-party
-    // providers are bundled with Codex CLI, so we only include the OpenAI and
-    // open source ("oss") providers by default. Users are encouraged to add to
-    // `model_providers` in config.toml to add their own providers.
+    // Built-in providers are local-first. Users can add remote providers in
+    // `model_providers` in config.toml when they need hosted model backends.
     [
-        (OPENAI_PROVIDER_ID, openai_provider),
-        (AMAZON_BEDROCK_PROVIDER_ID, amazon_bedrock_provider),
+        (LOCAL_PROVIDER_ID, local_provider),
         (
             OLLAMA_OSS_PROVIDER_ID,
             create_oss_provider(DEFAULT_OLLAMA_PORT, WireApi::Responses),
@@ -443,36 +450,13 @@ pub fn built_in_model_providers(
 /// Merge configured providers into the built-in provider catalog.
 ///
 /// Configured providers extend the built-in set. Built-in providers are not
-/// generally overridable, but the built-in Amazon Bedrock provider allows the
-/// user to set `aws.profile` and `aws.region`.
+/// overridden by entries with the same provider id.
 pub fn merge_configured_model_providers(
     mut model_providers: HashMap<String, ModelProviderInfo>,
     configured_model_providers: HashMap<String, ModelProviderInfo>,
 ) -> Result<HashMap<String, ModelProviderInfo>, String> {
-    for (key, mut provider) in configured_model_providers {
-        if key == AMAZON_BEDROCK_PROVIDER_ID {
-            let aws_override = provider.aws.take();
-            if provider != ModelProviderInfo::default() {
-                return Err(format!(
-                    "model_providers.{AMAZON_BEDROCK_PROVIDER_ID} only supports changing \
-`aws.profile` and `aws.region`; other non-default provider fields are not supported"
-                ));
-            }
-
-            if let Some(aws_override) = aws_override
-                && let Some(built_in_provider) = model_providers.get_mut(AMAZON_BEDROCK_PROVIDER_ID)
-                && let Some(built_in_aws) = built_in_provider.aws.as_mut()
-            {
-                if let Some(profile) = aws_override.profile {
-                    built_in_aws.profile = Some(profile);
-                }
-                if let Some(region) = aws_override.region {
-                    built_in_aws.region = Some(region);
-                }
-            }
-        } else {
-            model_providers.entry(key).or_insert(provider);
-        }
+    for (key, provider) in configured_model_providers {
+        model_providers.entry(key).or_insert(provider);
     }
 
     Ok(model_providers)

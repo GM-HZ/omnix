@@ -38,14 +38,6 @@ impl AuthProvider for AgentIdentityAuthProvider {
         {
             let _ = headers.insert(http::header::AUTHORIZATION, header);
         }
-
-        if let Ok(header) = HeaderValue::from_str(self.auth.account_id()) {
-            let _ = headers.insert("ChatGPT-Account-ID", header);
-        }
-
-        if self.auth.is_fedramp_account() {
-            let _ = headers.insert("X-OpenAI-Fedramp", HeaderValue::from_static("true"));
-        }
     }
 }
 
@@ -114,8 +106,6 @@ pub fn auth_provider_from_auth(auth: &CodexAuth) -> SharedAuthProvider {
         | CodexAuth::ChatgptAuthTokens(_)
         | CodexAuth::PersonalAccessToken(_) => Arc::new(BearerAuthProvider {
             token: auth.get_token().ok(),
-            account_id: auth.get_account_id(),
-            is_fedramp_account: auth.is_fedramp_account(),
         }),
     }
 }
