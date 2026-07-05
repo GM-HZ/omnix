@@ -77,8 +77,10 @@ use codex_mcp::McpPluginAttribution;
 use codex_mcp::McpServerRegistration;
 use codex_mcp::ResolvedMcpCatalog;
 use codex_memories_read::memory_root;
+use codex_model_provider_info::DEEPSEEK_PROVIDER_ID;
 use codex_model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
 use codex_model_provider_info::LOCAL_PROVIDER_ID;
+use codex_model_provider_info::QWEN_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OLLAMA_CHAT_PROVIDER_REMOVED_ERROR;
 use codex_model_provider_info::built_in_model_providers;
@@ -2455,6 +2457,17 @@ fn resolve_experimental_request_user_input_enabled(config_toml: &ConfigToml) -> 
         .is_none_or(|config| config.enabled)
 }
 
+/// When no explicit model provider is configured, auto-detect from environment.
+fn default_model_provider_id() -> String {
+    if std::env::var("DEEPSEEK_API_KEY").ok().is_some_and(|v| !v.is_empty()) {
+        return DEEPSEEK_PROVIDER_ID.to_string();
+    }
+    if std::env::var("DASHSCOPE_API_KEY").ok().is_some_and(|v| !v.is_empty()) {
+        return QWEN_PROVIDER_ID.to_string();
+    }
+    LOCAL_PROVIDER_ID.to_string()
+}
+
 fn resolve_orchestrator_feature_enabled(
     feature: Option<&codex_config::config_toml::OrchestratorFeatureToml>,
 ) -> bool {
@@ -3410,7 +3423,7 @@ impl Config {
 
         let model_provider_id = model_provider
             .or(cfg.model_provider)
-            .unwrap_or_else(|| LOCAL_PROVIDER_ID.to_string());
+            .unwrap_or_else(|| default_model_provider_id());
         let model_provider = model_providers
             .get(&model_provider_id)
             .ok_or_else(|| {

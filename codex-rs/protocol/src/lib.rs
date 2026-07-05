@@ -31,3 +31,11 @@ pub mod request_permissions;
 pub mod request_user_input;
 pub mod shell_environment;
 pub mod user_input;
+
+pub mod omnix_types;
+pub use omnix_types::OmnixContentPart;
+pub use omnix_types::OmnixFunctionCall;
+pub use omnix_types::OmnixImageUrl;
+pub use omnix_types::OmnixMessage;
+pub use omnix_types::OmnixToolCall;
+pub use omnix_types::OmnixUserContent;

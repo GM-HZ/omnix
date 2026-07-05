@@ -1,4 +1,5 @@
 use crate::error::ApiError;
+use codex_protocol::OmnixMessage;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::config_types::Verbosity as VerbosityConfig;
 use codex_protocol::models::ResponseItem;
@@ -113,6 +114,9 @@ pub enum ResponseEvent {
     },
     RateLimits(RateLimitSnapshot),
     ModelsEtag(String),
+    /// Chat Completions output item — carries an `OmnixMessage` instead of
+    /// a `ResponseItem`. Used by the Chat Completions SSE parser.
+    ChatOutputItemDone(OmnixMessage),
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

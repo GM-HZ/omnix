@@ -2344,6 +2344,7 @@ async fn try_run_sampling_request(
                     error_or_panic("ReasoningRawContentDelta without active item".to_string());
                 }
             }
+            ResponseEvent::ChatOutputItemDone(_) => {}
         }
     };
     drop(sampling_timing_guard);

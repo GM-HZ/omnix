@@ -28,7 +28,6 @@ use crate::types::Tui;
 use crate::types::UriBasedFileOpener;
 use crate::types::WindowsToml;
 use codex_features::FeaturesToml;
-use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
 use codex_model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
 use codex_model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
 use codex_model_provider_info::LOCAL_PROVIDER_ID;
@@ -916,14 +915,6 @@ pub fn validate_model_providers(
 ) -> Result<(), String> {
     validate_reserved_model_provider_ids(model_providers)?;
     for (key, provider) in model_providers {
-        if key == AMAZON_BEDROCK_PROVIDER_ID {
-            continue;
-        }
-        if provider.aws.is_some() {
-            return Err(format!(
-                "model_providers.{key}: provider aws is only supported for `{AMAZON_BEDROCK_PROVIDER_ID}`"
-            ));
-        }
         if provider.name.trim().is_empty() {
             return Err(format!(
                 "model_providers.{key}: provider name must not be empty"
