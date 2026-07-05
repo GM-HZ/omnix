@@ -1,5 +1,6 @@
 pub(crate) mod api_bridge;
 pub(crate) mod auth;
+pub mod chat_completions;
 pub(crate) mod common;
 pub(crate) mod endpoint;
 pub(crate) mod error;
@@ -109,5 +110,9 @@ pub use crate::search::TimeOperation;
 pub use crate::search::WeatherOperation;
 pub use crate::telemetry::SseTelemetry;
 pub use crate::telemetry::WebsocketTelemetry;
+pub use chat_completions::ChatCompletionsClient;
+pub use chat_completions::ChatCompletionsRequest;
+pub use chat_completions::DeepSeekThinking;
+pub use chat_completions::StreamOptions;
 pub use codex_protocol::protocol::RealtimeAudioFrame;
 pub use codex_protocol::protocol::RealtimeEvent;

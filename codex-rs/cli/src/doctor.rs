@@ -2569,7 +2569,7 @@ fn provider_reachability_plan(config: &Config) -> ReachabilityPlan {
         &config.model_provider.name,
         config.model_provider.base_url.as_deref(),
         config.model_provider.query_params.as_ref(),
-        config.model_provider.is_amazon_bedrock(),
+        false, /* is_amazon_bedrock */
         &config.chatgpt_base_url,
     )
 }

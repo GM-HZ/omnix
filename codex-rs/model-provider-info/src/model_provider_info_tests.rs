@@ -136,16 +136,16 @@ supports_websockets = true
 fn test_supports_remote_compaction_for_openai() {
     let provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
 
-    assert!(provider.supports_remote_compaction());
+    assert!(!provider.supports_remote_compaction());
 }
 
 #[test]
-fn test_personal_access_token_uses_chatgpt_codex_base_url() {
+fn test_personal_access_token_uses_local_default_base_url() {
     let api_provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None)
         .to_api_provider(Some(AuthMode::PersonalAccessToken))
         .expect("OpenAI provider should build API provider");
 
-    assert_eq!(api_provider.base_url, CHATGPT_CODEX_BASE_URL);
+    assert_eq!(api_provider.base_url, LOCAL_DEFAULT_BASE_URL);
 }
 
 #[test]
@@ -170,7 +170,7 @@ fn test_supports_remote_compaction_for_azure_name() {
         supports_websockets: false,
     };
 
-    assert!(provider.supports_remote_compaction());
+    assert!(!provider.supports_remote_compaction());
 }
 
 #[test]
@@ -306,6 +306,32 @@ fn test_create_amazon_bedrock_provider() {
 }
 
 #[test]
+fn test_create_local_provider() {
+    assert_eq!(
+        ModelProviderInfo::create_local_provider(/*base_url*/ None),
+        ModelProviderInfo {
+            name: "Local Model Provider".to_string(),
+            base_url: Some("http://localhost:11434/v1".to_string()),
+            env_key: None,
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            auth: None,
+            aws: None,
+            wire_api: WireApi::Responses,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+        }
+    );
+}
+
+#[test]
 fn test_amazon_bedrock_provider_adds_mantle_client_agent_header() {
     let api_provider = ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None)
         .to_api_provider(/*auth_mode*/ None)
@@ -321,15 +347,23 @@ fn test_amazon_bedrock_provider_adds_mantle_client_agent_header() {
 }
 
 #[test]
-fn test_built_in_model_providers_include_amazon_bedrock() {
+fn test_built_in_model_providers_include_local_provider() {
     let providers = built_in_model_providers(/*openai_base_url*/ None);
 
     assert_eq!(
-        providers
-            .get(AMAZON_BEDROCK_PROVIDER_ID)
-            .map(ModelProviderInfo::is_amazon_bedrock),
-        Some(true)
+        providers.get(LOCAL_PROVIDER_ID),
+        Some(&ModelProviderInfo::create_local_provider(
+            /*base_url*/ None
+        ))
     );
+}
+
+#[test]
+fn test_built_in_model_providers_exclude_openai_and_amazon_bedrock() {
+    let providers = built_in_model_providers(/*openai_base_url*/ None);
+
+    assert_eq!(providers.get(OPENAI_PROVIDER_ID), None);
+    assert_eq!(providers.get(AMAZON_BEDROCK_PROVIDER_ID), None);
 }
 
 #[test]
@@ -355,64 +389,7 @@ fn test_merge_configured_model_providers_adds_custom_provider() {
 }
 
 #[test]
-fn test_merge_configured_model_providers_applies_amazon_bedrock_profile_override() {
-    let configured_model_providers = std::collections::HashMap::from([(
-        AMAZON_BEDROCK_PROVIDER_ID.to_string(),
-        ModelProviderInfo {
-            aws: Some(ModelProviderAwsAuthInfo {
-                profile: Some("codex-bedrock".to_string()),
-                region: Some("us-west-2".to_string()),
-            }),
-            ..ModelProviderInfo::default()
-        },
-    )]);
-
-    let mut expected = built_in_model_providers(/*openai_base_url*/ None);
-    expected
-        .get_mut(AMAZON_BEDROCK_PROVIDER_ID)
-        .expect("Amazon Bedrock provider should be built in")
-        .aws = Some(ModelProviderAwsAuthInfo {
-        profile: Some("codex-bedrock".to_string()),
-        region: Some("us-west-2".to_string()),
-    });
-
-    assert_eq!(
-        merge_configured_model_providers(
-            built_in_model_providers(/*openai_base_url*/ None),
-            configured_model_providers,
-        ),
-        Ok(expected)
-    );
-}
-
-#[test]
-fn test_merge_configured_model_providers_rejects_amazon_bedrock_non_default_fields() {
-    let configured_model_providers = std::collections::HashMap::from([(
-        AMAZON_BEDROCK_PROVIDER_ID.to_string(),
-        ModelProviderInfo {
-            name: "Custom Bedrock".to_string(),
-            aws: Some(ModelProviderAwsAuthInfo {
-                profile: Some("codex-bedrock".to_string()),
-                region: None,
-            }),
-            ..ModelProviderInfo::default()
-        },
-    )]);
-
-    assert_eq!(
-        merge_configured_model_providers(
-            built_in_model_providers(/*openai_base_url*/ None),
-            configured_model_providers,
-        ),
-        Err(
-            "model_providers.amazon-bedrock only supports changing `aws.profile` and `aws.region`; other non-default provider fields are not supported"
-                .to_string()
-        )
-    );
-}
-
-#[test]
-fn test_merge_configured_model_providers_allows_amazon_bedrock_default_fields() {
+fn test_merge_configured_model_providers_adds_amazon_bedrock_as_custom_provider() {
     let configured_model_providers = std::collections::HashMap::from([(
         AMAZON_BEDROCK_PROVIDER_ID.to_string(),
         ModelProviderInfo {
@@ -420,17 +397,33 @@ fn test_merge_configured_model_providers_allows_amazon_bedrock_default_fields() 
                 profile: None,
                 region: None,
             }),
+            base_url: Some("https://bedrock.example.com/openai/v1".to_string()),
+            name: "Amazon Bedrock".to_string(),
             wire_api: WireApi::Responses,
             ..ModelProviderInfo::default()
         },
     )]);
+    let mut expected = built_in_model_providers(/*openai_base_url*/ None);
+    expected.insert(
+        AMAZON_BEDROCK_PROVIDER_ID.to_string(),
+        ModelProviderInfo {
+            aws: Some(ModelProviderAwsAuthInfo {
+                profile: None,
+                region: None,
+            }),
+            base_url: Some("https://bedrock.example.com/openai/v1".to_string()),
+            name: "Amazon Bedrock".to_string(),
+            wire_api: WireApi::Responses,
+            ..ModelProviderInfo::default()
+        },
+    );
 
     assert_eq!(
         merge_configured_model_providers(
             built_in_model_providers(/*openai_base_url*/ None),
             configured_model_providers,
         ),
-        Ok(built_in_model_providers(/*openai_base_url*/ None))
+        Ok(expected)
     );
 }
 

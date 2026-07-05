@@ -114,8 +114,6 @@ use crate::feedback_tags;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::subagent_header_value;
 use crate::util::emit_feedback_auth_recovery_tags;
-use codex_feedback::FeedbackRequestTags;
-use codex_feedback::emit_feedback_request_tags_with_auth_env;
 use codex_login::auth::AgentIdentityAuthPolicy;
 use codex_login::auth_env_telemetry::AuthEnvTelemetry;
 use codex_login::auth_env_telemetry::collect_auth_env_telemetry;
@@ -891,6 +889,83 @@ impl ModelClient {
         Ok(request)
     }
 
+    /// Builds a Chat Completions API request from the current prompt state.
+    /// Converts ResponseItem history into Chat Completions messages format.
+    fn build_chat_completions_request(
+        &self,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+    ) -> Result<codex_api::ChatCompletionsRequest> {
+        use codex_api::DeepSeekThinking;
+        use codex_api::StreamOptions;
+        use codex_protocol::OmnixMessage;
+        use codex_protocol::openai_models::ReasoningEffort;
+
+        let mut messages: Vec<serde_json::Value> = Vec::new();
+
+        // System message from instructions
+        let instructions = &prompt.base_instructions.text;
+        if !instructions.is_empty() {
+            let sys_msg = OmnixMessage::system(instructions.clone());
+            let val = serde_json::to_value(&sys_msg)?;
+            messages.push(val);
+        }
+
+        // Convert input items to Chat Completions messages
+        for item in prompt.get_formatted_input_for_request(model_info.use_responses_lite) {
+            if let Some(msg_val) = response_item_to_chat_message(&item) {
+                messages.push(msg_val);
+            }
+        }
+
+        // Build tools array
+        let tools = create_tools_json_for_chat_completions(&prompt.tools)?;
+
+        // Map reasoning effort to DeepSeek thinking config.
+        // For Qwen and other non-DeepSeek providers, thinking is left unset
+        // (they use enable_thinking/thinking_budget instead).
+        let thinking = Self::deepseek_thinking_for_effort(model_info);
+
+        let request = codex_api::ChatCompletionsRequest {
+            model: model_info.slug.clone(),
+            messages,
+            tools,
+            tool_choice: if prompt.tools.is_empty() {
+                None
+            } else {
+                Some(serde_json::Value::String("auto".into()))
+            },
+            stream: true,
+            stream_options: Some(StreamOptions { include_usage: true }),
+            temperature: None,
+            max_tokens: None,
+            parallel_tool_calls: Some(prompt.parallel_tool_calls),
+            enable_thinking: None,
+            thinking_budget: None,
+            thinking,
+        };
+        Ok(request)
+    }
+
+/// Resolve DeepSeek thinking config from model reasoning defaults.
+fn deepseek_thinking_for_effort(model_info: &ModelInfo) -> Option<codex_api::DeepSeekThinking> {
+    use codex_api::DeepSeekThinking;
+    use codex_protocol::openai_models::ReasoningEffort;
+    match model_info.default_reasoning_level.as_ref()? {
+        ReasoningEffort::None | ReasoningEffort::Minimal | ReasoningEffort::Low => {
+            Some(DeepSeekThinking::Disabled)
+        }
+        ReasoningEffort::Medium => Some(DeepSeekThinking::Enabled),
+        ReasoningEffort::High | ReasoningEffort::Max => {
+            Some(DeepSeekThinking::Annotated { budget: 8192 })
+        }
+        ReasoningEffort::XHigh | ReasoningEffort::Ultra => {
+            Some(DeepSeekThinking::Annotated { budget: 16384 })
+        }
+        ReasoningEffort::Custom(_) => None,
+    }
+}
+
     fn prepare_response_items_for_request(&self, input: &mut [ResponseItem], store: bool) {
         if self.state.item_ids_enabled || store {
             return;
@@ -1002,30 +1077,6 @@ impl ModelClient {
             response_debug.auth_error.as_deref(),
             response_debug.auth_error_code.as_deref(),
             auth_context.agent_identity_telemetry(),
-        );
-        emit_feedback_request_tags_with_auth_env(
-            &FeedbackRequestTags {
-                endpoint: request_route_telemetry.endpoint,
-                auth_header_attached: auth_context.auth_header_attached,
-                auth_header_name: auth_context.auth_header_name,
-                auth_mode: auth_context.auth_mode,
-                auth_retry_after_unauthorized: Some(auth_context.retry_after_unauthorized),
-                auth_recovery_mode: auth_context.recovery_mode,
-                auth_recovery_phase: auth_context.recovery_phase,
-                auth_connection_reused: Some(false),
-                auth_request_id: response_debug.request_id.as_deref(),
-                auth_cf_ray: response_debug.cf_ray.as_deref(),
-                auth_error: response_debug.auth_error.as_deref(),
-                auth_error_code: response_debug.auth_error_code.as_deref(),
-                auth_recovery_followup_success: auth_context
-                    .retry_after_unauthorized
-                    .then_some(result.is_ok()),
-                auth_recovery_followup_status: auth_context
-                    .retry_after_unauthorized
-                    .then_some(status)
-                    .flatten(),
-            },
-            &self.state.auth_env_telemetry,
         );
         result
     }
@@ -1465,6 +1516,65 @@ impl ModelClientSession {
         }
     }
 
+    /// Streams a turn via the Chat Completions API (for Qwen/DeepSeek/etc).
+    #[instrument(
+        name = "model_client.stream_chat_completions",
+        level = "info",
+        skip_all,
+        fields(
+            model = %model_info.slug,
+            wire_api = "chat_completions",
+            transport = "http_sse",
+        )
+    )]
+    async fn stream_chat_completions(
+        &self,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+        session_telemetry: &SessionTelemetry,
+        inference_trace: &InferenceTraceContext,
+    ) -> Result<ResponseStream> {
+        use codex_api::ChatCompletionsClient;
+
+        let client_setup = self.client.current_client_setup().await?;
+        let transport = ReqwestTransport::new(build_reqwest_client());
+
+        let request = self.client.build_chat_completions_request(
+            prompt,
+            model_info,
+        )?;
+
+        let request_telemetry_ctx = AuthRequestTelemetryContext::new(
+            client_setup.auth.as_ref().map(CodexAuth::auth_mode),
+            client_setup.api_auth.as_ref(),
+            client_setup.agent_identity_telemetry.clone(),
+            PendingUnauthorizedRetry::default(),
+        );
+        let (request_telemetry, _sse_telemetry) = Self::build_streaming_telemetry(
+            session_telemetry,
+            request_telemetry_ctx,
+            RequestRouteTelemetry::for_endpoint("chat/completions"),
+            self.client.state.auth_env_telemetry.clone(),
+        );
+
+        let client = ChatCompletionsClient::new(
+            transport,
+            client_setup.api_provider,
+            client_setup.api_auth,
+        )
+        .with_telemetry(Some(request_telemetry));
+
+        let headers = ApiHeaderMap::new();
+        let api_stream = client.stream_request(request, headers).await.map_err(|e| self.client.state.provider.map_api_error(e))?;
+        let (stream, _) = map_response_stream(
+            api_stream,
+            session_telemetry.clone(),
+            inference_trace.start_attempt(),
+            Arc::clone(&self.client.state.provider),
+        );
+        Ok(stream)
+    }
+
     /// Streams a turn via the Responses API over WebSocket transport.
     #[allow(clippy::too_many_arguments)]
     #[instrument(
@@ -1777,6 +1887,15 @@ impl ModelClientSession {
                     summary,
                     service_tier,
                     responses_metadata,
+                    inference_trace,
+                )
+                .await
+            }
+            WireApi::ChatCompletions => {
+                self.stream_chat_completions(
+                    prompt,
+                    model_info,
+                    session_telemetry,
                     inference_trace,
                 )
                 .await
@@ -2304,32 +2423,6 @@ impl RequestTelemetry for ApiTelemetry {
             debug.auth_error_code.as_deref(),
             self.auth_context.agent_identity_telemetry(),
         );
-        emit_feedback_request_tags_with_auth_env(
-            &FeedbackRequestTags {
-                endpoint: self.request_route_telemetry.endpoint,
-                auth_header_attached: self.auth_context.auth_header_attached,
-                auth_header_name: self.auth_context.auth_header_name,
-                auth_mode: self.auth_context.auth_mode,
-                auth_retry_after_unauthorized: Some(self.auth_context.retry_after_unauthorized),
-                auth_recovery_mode: self.auth_context.recovery_mode,
-                auth_recovery_phase: self.auth_context.recovery_phase,
-                auth_connection_reused: None,
-                auth_request_id: debug.request_id.as_deref(),
-                auth_cf_ray: debug.cf_ray.as_deref(),
-                auth_error: debug.auth_error.as_deref(),
-                auth_error_code: debug.auth_error_code.as_deref(),
-                auth_recovery_followup_success: self
-                    .auth_context
-                    .retry_after_unauthorized
-                    .then_some(error.is_none()),
-                auth_recovery_followup_status: self
-                    .auth_context
-                    .retry_after_unauthorized
-                    .then_some(status)
-                    .flatten(),
-            },
-            &self.auth_env_telemetry,
-        );
     }
 }
 
@@ -2359,32 +2452,6 @@ impl WebsocketTelemetry for ApiTelemetry {
             connection_reused,
             self.auth_context.agent_identity_telemetry(),
         );
-        emit_feedback_request_tags_with_auth_env(
-            &FeedbackRequestTags {
-                endpoint: self.request_route_telemetry.endpoint,
-                auth_header_attached: self.auth_context.auth_header_attached,
-                auth_header_name: self.auth_context.auth_header_name,
-                auth_mode: self.auth_context.auth_mode,
-                auth_retry_after_unauthorized: Some(self.auth_context.retry_after_unauthorized),
-                auth_recovery_mode: self.auth_context.recovery_mode,
-                auth_recovery_phase: self.auth_context.recovery_phase,
-                auth_connection_reused: Some(connection_reused),
-                auth_request_id: debug.request_id.as_deref(),
-                auth_cf_ray: debug.cf_ray.as_deref(),
-                auth_error: debug.auth_error.as_deref(),
-                auth_error_code: debug.auth_error_code.as_deref(),
-                auth_recovery_followup_success: self
-                    .auth_context
-                    .retry_after_unauthorized
-                    .then_some(error.is_none()),
-                auth_recovery_followup_status: self
-                    .auth_context
-                    .retry_after_unauthorized
-                    .then_some(status)
-                    .flatten(),
-            },
-            &self.auth_env_telemetry,
-        );
     }
 
     fn on_ws_event(
@@ -2395,6 +2462,145 @@ impl WebsocketTelemetry for ApiTelemetry {
         self.session_telemetry
             .record_websocket_event(result, duration);
     }
+}
+
+/// Convert a `ResponseItem` to a Chat Completions message JSON value.
+/// Returns `None` for items that have no Chat Completions equivalent
+/// (e.g. Compaction markers).
+fn response_item_to_chat_message(item: &ResponseItem) -> Option<serde_json::Value> {
+    use codex_protocol::OmnixContentPart;
+    use codex_protocol::OmnixImageUrl;
+    use codex_protocol::OmnixMessage;
+    use codex_protocol::models::ContentItem;
+    match item {
+        ResponseItem::Message { role, content, .. } => {
+            let has_image = content
+                .iter()
+                .any(|c| matches!(c, ContentItem::InputImage { .. }));
+
+            if has_image && role == "user" {
+                let parts: Vec<OmnixContentPart> = content
+                    .iter()
+                    .filter_map(|c| match c {
+                        ContentItem::InputText { text } | ContentItem::OutputText { text } => {
+                            Some(OmnixContentPart::Text { text: text.clone() })
+                        }
+                        ContentItem::InputImage { image_url, .. } => {
+                            Some(OmnixContentPart::ImageUrl {
+                                image_url: OmnixImageUrl {
+                                    url: image_url.clone(),
+                                    detail: None,
+                                },
+                            })
+                        }
+                    })
+                    .collect();
+                let msg = OmnixMessage::user_parts(parts);
+                serde_json::to_value(&msg).ok()
+            } else {
+                let text: String = content
+                    .iter()
+                    .filter_map(|c| match c {
+                        ContentItem::InputText { text } | ContentItem::OutputText { text } => {
+                            Some(text.as_str())
+                        }
+                        ContentItem::InputImage { .. } => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
+                let msg = match role.as_str() {
+                    "system" => OmnixMessage::system(text),
+                    "user" => OmnixMessage::user_text(text),
+                    "assistant" => OmnixMessage::assistant_text(text),
+                    _ => return None,
+                };
+                serde_json::to_value(&msg).ok()
+            }
+        }
+        ResponseItem::FunctionCall {
+            call_id,
+            name,
+            arguments,
+            ..
+        } => {
+            use codex_protocol::OmnixToolCall;
+            let msg = OmnixMessage::assistant_tool_calls(vec![OmnixToolCall::new(
+                call_id.clone(),
+                name.clone(),
+                arguments.clone(),
+            )]);
+            serde_json::to_value(&msg).ok()
+        }
+        ResponseItem::FunctionCallOutput { call_id, output, .. } => {
+            let content = output.body.to_text().unwrap_or_default();
+            let msg = OmnixMessage::tool_result(call_id.as_str(), content);
+            serde_json::to_value(&msg).ok()
+        }
+        ResponseItem::LocalShellCall {
+            call_id, action, ..
+        } => {
+            use codex_protocol::OmnixToolCall;
+            let id = call_id.clone().unwrap_or_default();
+            let args = serde_json::to_string(action).map_err(|e| {
+                tracing::warn!("Failed to serialize LocalShellAction: {e}");
+                e
+            }).unwrap_or_default();
+            let msg = OmnixMessage::assistant_tool_calls(vec![OmnixToolCall::new(
+                id,
+                "shell".into(),
+                args,
+            )]);
+            serde_json::to_value(&msg).ok()
+        }
+        ResponseItem::Reasoning { .. } => {
+            // Reasoning/thinking content is not sent back to Chat Completions APIs —
+            // providers don't accept reasoning in follow-up requests. This content
+            // is preserved in internal history for TUI display only.
+            None
+        }
+        ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. } => None,
+        _ => None,
+    }
+}
+
+/// Convert tool specs to Chat Completions tools format.
+fn create_tools_json_for_chat_completions(
+    tools: &[codex_tools::ToolSpec],
+) -> Result<Vec<serde_json::Value>> {
+    use codex_tools::ToolSpec;
+    let mut result = Vec::new();
+    for tool in tools {
+        match tool {
+            ToolSpec::Function(func) => {
+                let func_obj = serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": func.name,
+                        "description": func.description,
+                        "parameters": func.parameters,
+                    }
+                });
+                result.push(func_obj);
+            }
+            ToolSpec::Freeform(freeform) => {
+                let func_obj = serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": freeform.name,
+                        "description": freeform.description,
+                        "parameters": {},
+                    }
+                });
+                result.push(func_obj);
+            }
+            _ => {
+                // Namespace, ToolSearch, ImageGeneration and other variants
+                // don't have a direct Chat Completions tool representation.
+                // Skip them silently.
+            }
+        }
+    }
+    Ok(result)
 }
 
 #[cfg(test)]
