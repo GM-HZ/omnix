@@ -944,15 +944,8 @@ async fn run_auto_compact(
                 "remote_v2",
                 /*manual*/ false,
             );
-            run_inline_remote_auto_compact_task_v2(
-                Arc::clone(sess),
-                step_context,
-                client_session,
-                initial_context_injection,
-                reason,
-                phase,
-            )
-            .await?;
+            // remote compact v2 removed
+            return Ok(());
             return Ok(());
         }
         emit_compact_metric(
@@ -960,15 +953,8 @@ async fn run_auto_compact(
             "remote",
             /*manual*/ false,
         );
-        run_inline_remote_auto_compact_task(
-            Arc::clone(sess),
-            step_context,
-            client_session.turn_state(),
-            initial_context_injection,
-            reason,
-            phase,
-        )
-        .await?;
+        // remote compact removed
+        return Ok(());
     } else {
         emit_compact_metric(
             &sess.services.session_telemetry,

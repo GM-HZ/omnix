@@ -1,6 +1,8 @@
 use super::*;
 use codex_core::config::permission_profile_catalog;
 use futures::StreamExt;
+use crate::chatgpt_stubs::workspace_settings;
+use crate::chatgpt_stubs::connectors;
 
 #[derive(Clone)]
 pub(crate) struct CatalogRequestProcessor {

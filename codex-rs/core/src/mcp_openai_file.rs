@@ -139,14 +139,7 @@ async fn build_uploaded_argument_value(
             resolved_path.display()
         )));
     }
-    if metadata.size > OPENAI_FILE_UPLOAD_LIMIT_BYTES {
-        return Err(contextualize_error(format!(
-            "file `{}` is too large: {} bytes exceeds the limit of {} bytes",
-            resolved_path.display(),
-            metadata.size,
-            OPENAI_FILE_UPLOAD_LIMIT_BYTES,
-        )));
-    }
+    
     let contents = fs
         .read_file_stream(&path_uri, /*sandbox*/ None)
         .await
@@ -156,24 +149,7 @@ async fn build_uploaded_argument_value(
         .and_then(|value| value.to_str())
         .unwrap_or("file")
         .to_string();
-    let upload_auth = codex_model_provider::auth_provider_from_auth(auth);
-    let uploaded = upload_openai_file(
-        turn_context.config.chatgpt_base_url.trim_end_matches('/'),
-        upload_auth.as_ref(),
-        file_name,
-        metadata.size,
-        contents,
-    )
-    .await
-    .map_err(|error| contextualize_error(error.to_string()))?;
-    Ok(serde_json::json!({
-        "download_url": uploaded.download_url,
-        "file_id": uploaded.file_id,
-        "mime_type": uploaded.mime_type,
-        "file_name": uploaded.file_name,
-        "uri": uploaded.uri,
-        "file_size_bytes": uploaded.file_size_bytes,
-    }))
+    Err("OpenAI file upload removed".to_string())
 }
 
 #[cfg(test)]

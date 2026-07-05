@@ -10,8 +10,6 @@ mod apps;
 mod client;
 mod client_common;
 mod realtime_conversation;
-mod compact_remote;
-mod compact_remote_v2;
 mod responses_metadata;
 mod responses_retry;
 pub(crate) mod session;

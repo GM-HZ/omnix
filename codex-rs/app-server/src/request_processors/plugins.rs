@@ -26,6 +26,8 @@ use codex_plugin::PluginId;
 use codex_plugin::PluginTelemetryMetadata;
 use codex_protocol::auth::AuthMode as DomainAuthMode;
 use codex_rmcp_client::perform_oauth_login_silent;
+use crate::chatgpt_stubs::workspace_settings;
+use crate::chatgpt_stubs::connectors;
 
 #[derive(Clone)]
 pub(crate) struct PluginRequestProcessor {
