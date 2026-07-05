@@ -10,7 +10,7 @@ impl RealtimeConversationManager {
     pub(crate) fn handoff_out(&self) {}
     pub(crate) fn running_state(&self) {}
     pub(crate) async fn shutdown(&self) {}
-    pub(crate) async fn audio_in(&self, _f: codex_api::RealtimeAudioFrame) -> Result<(), codex_protocol::error::CodexErr> { Ok(()) }
+    pub(crate) async fn audio_in(&self, _f: codex_protocol::protocol::RealtimeAudioFrame) -> Result<(), codex_protocol::error::CodexErr> { Ok(()) }
 }
 
 pub(crate) async fn handle_start(_s: &Arc<Session>, _i: String, _p: ConversationStartParams) -> Result<(), codex_protocol::error::CodexErr> { Err(codex_protocol::error::CodexErr::UnsupportedOperation("realtime removed".into())) }
