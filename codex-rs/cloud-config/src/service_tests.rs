@@ -96,7 +96,6 @@ async fn auth_manager_with_plan(plan_type: &str) -> Arc<AuthManager> {
 
 async fn auth_manager_with_agent_identity_business_plan() -> Arc<AuthManager> {
     let key_material =
-        codex_agent_identity::generate_agent_key_material().expect("generate agent key material");
     AuthManager::from_auth_for_testing(CodexAuth::AgentIdentity(
         AgentIdentityAuth::from_record(
             AgentIdentityAuthRecord {

@@ -21,7 +21,7 @@ use tokio::sync::Semaphore;
 use tokio::sync::watch;
 use tracing::instrument;
 
-use codex_agent_identity::ChatGptEnvironment;
+use super::agent_identity::ChatGptEnvironment;
 use codex_protocol::auth::AuthMode;
 use codex_protocol::config_types::ForcedLoginMethod;
 use codex_protocol::config_types::ModelProviderAuthInfo;

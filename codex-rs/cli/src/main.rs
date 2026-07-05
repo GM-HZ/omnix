@@ -8,8 +8,6 @@ use codex_app_server_daemon::LifecycleCommand as AppServerLifecycleCommand;
 use codex_app_server_daemon::RemoteControlMode as AppServerRemoteControlMode;
 use codex_arg0::Arg0DispatchPaths;
 use codex_arg0::arg0_dispatch_or_else;
-use codex_chatgpt::apply_command::ApplyCommand;
-use codex_chatgpt::apply_command::run_apply_command;
 use codex_cli::read_access_token_from_stdin;
 use codex_cli::read_api_key_from_stdin;
 use codex_cli::run_login_status;
@@ -23,7 +21,6 @@ use codex_exec::Cli as ExecCli;
 use codex_exec::Command as ExecCommand;
 use codex_exec::ReviewArgs;
 use codex_execpolicy::ExecPolicyCheckCommand;
-use codex_responses_api_proxy::Args as ResponsesApiProxyArgs;
 use codex_rollout_trace::REDUCED_STATE_FILE_NAME;
 use codex_rollout_trace::replay_bundle;
 use codex_state::StateRuntime;
@@ -175,8 +172,7 @@ enum Subcommand {
 
     /// Apply the latest diff produced by Codex agent as a `git apply` to your local working tree.
     #[clap(visible_alias = "a")]
-    Apply(ApplyCommand),
-
+    
     /// Resume a previous interactive session (picker by default; use --last to continue the most recent).
     Resume(ResumeCommand),
 

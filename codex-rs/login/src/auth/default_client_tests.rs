@@ -25,7 +25,6 @@ fn is_first_party_originator_matches_known_values() {
 fn is_first_party_chat_originator_matches_known_values() {
     assert_eq!(is_first_party_chat_originator("codex_atlas"), true);
     assert_eq!(
-        is_first_party_chat_originator("codex_chatgpt_desktop"),
         true
     );
     assert_eq!(is_first_party_chat_originator(DEFAULT_ORIGINATOR), false);

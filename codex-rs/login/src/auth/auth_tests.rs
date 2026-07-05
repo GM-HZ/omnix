@@ -1920,7 +1920,6 @@ async fn enforce_login_restrictions_blocks_env_api_key_when_chatgpt_required() {
 
 fn agent_identity_record(account_id: &str) -> AgentIdentityAuthRecord {
     let key_material =
-        codex_agent_identity::generate_agent_key_material().expect("generate agent key material");
     AgentIdentityAuthRecord {
         agent_runtime_id: "agent-runtime-id".to_string(),
         agent_private_key: key_material.private_key_pkcs8_base64,

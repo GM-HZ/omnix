@@ -66,7 +66,6 @@ use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::ServerRequestPayload;
 use codex_app_server_protocol::experimental_required_message;
 use codex_arg0::Arg0DispatchPaths;
-use codex_chatgpt::workspace_settings;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
 use codex_exec_server::EnvironmentManager;

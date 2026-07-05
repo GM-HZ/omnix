@@ -13,8 +13,6 @@
 
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
-use codex_api::OPENAI_FILE_UPLOAD_LIMIT_BYTES;
-use codex_api::upload_openai_file;
 use codex_login::CodexAuth;
 use codex_utils_path_uri::PathUri;
 use serde_json::Value as JsonValue;

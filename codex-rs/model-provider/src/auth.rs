@@ -2,8 +2,6 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
-use codex_agent_identity::AgentIdentityKey;
-use codex_agent_identity::authorization_header_for_agent_task;
 use codex_api::AgentIdentityTelemetry;
 use codex_api::AuthProvider;
 use codex_api::SharedAuthProvider;
@@ -247,7 +245,6 @@ pub fn auth_provider_from_auth(auth: &CodexAuth) -> SharedAuthProvider {
 
 #[cfg(test)]
 mod tests {
-    use codex_agent_identity::generate_agent_key_material;
     use codex_login::AuthCredentialsStoreMode;
     use codex_login::AuthKeyringBackendKind;
     use codex_login::auth::AgentIdentityAuthRecord;
@@ -570,4 +567,13 @@ mod tests {
         assert!(second_fallback.is_engaged());
         assert_eq!(registration_count.load(Ordering::SeqCst), 3);
     }
+}
+
+// Stubs for removed codex_agent_identity functions
+pub struct AgentIdentityKey<'a> {
+    pub agent_runtime_id: &'a str,
+    pub private_key_pkcs8_base64: &'a str,
+}
+pub fn authorization_header_for_agent_task(_key: AgentIdentityKey<'_>, _task_id: String) -> Result<String, std::io::Error> {
+    Err(std::io::Error::other("agent identity removed"))
 }

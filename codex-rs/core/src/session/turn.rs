@@ -13,8 +13,6 @@ use crate::collect_explicit_skill_mentions;
 use crate::compact::InitialContextInjection;
 use crate::compact::run_inline_auto_compact_task;
 use crate::compact::should_use_remote_compact_task;
-use crate::compact_remote::run_inline_remote_auto_compact_task;
-use crate::compact_remote_v2::run_inline_remote_auto_compact_task as run_inline_remote_auto_compact_task_v2;
 use crate::connectors;
 use crate::context::ContextualUserFragment;
 use crate::feedback_tags;

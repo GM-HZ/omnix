@@ -300,8 +300,6 @@ use codex_backend_client::CodexWorkspaceMessagesResponse as BackendWorkspaceMess
 use codex_backend_client::ConsumeRateLimitResetCreditCode as BackendConsumeRateLimitResetCreditCode;
 use codex_backend_client::RequestError as BackendRequestError;
 use codex_backend_client::TokenUsageProfile;
-use codex_chatgpt::connectors;
-use codex_chatgpt::workspace_settings;
 use codex_config::CloudConfigBundleLoadError;
 use codex_config::CloudConfigBundleLoadErrorCode;
 use codex_config::ConfigLayerStack;

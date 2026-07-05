@@ -41,8 +41,6 @@ use codex_api::MemorySummarizeInput as ApiMemorySummarizeInput;
 use codex_api::MemorySummarizeOutput as ApiMemorySummarizeOutput;
 use codex_api::Provider as ApiProvider;
 use codex_api::RawMemory as ApiRawMemory;
-use codex_api::RealtimeCallClient as ApiRealtimeCallClient;
-use codex_api::RealtimeSessionConfig as ApiRealtimeSessionConfig;
 use codex_api::Reasoning;
 use codex_api::ReasoningContext;
 use codex_api::RequestTelemetry;
