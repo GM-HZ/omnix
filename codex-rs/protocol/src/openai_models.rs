@@ -45,6 +45,8 @@ pub enum ReasoningEffort {
     Medium,
     High,
     XHigh,
+    Max,
+    Ultra,
     /// A model-defined effort value that this client does not know yet.
     Custom(String),
 }
@@ -59,6 +61,8 @@ impl ReasoningEffort {
             Self::Medium => "medium",
             Self::High => "high",
             Self::XHigh => "xhigh",
+            Self::Max => "max",
+            Self::Ultra => "ultra",
             Self::Custom(effort) => effort,
         }
     }
@@ -123,6 +127,8 @@ impl FromStr for ReasoningEffort {
             "medium" => Ok(Self::Medium),
             "high" => Ok(Self::High),
             "xhigh" => Ok(Self::XHigh),
+            "max" => Ok(Self::Max),
+            "ultra" => Ok(Self::Ultra),
             "" => Err("reasoning_effort must not be empty".to_string()),
             effort => Ok(Self::Custom(effort.to_string())),
         }
@@ -367,6 +373,8 @@ pub struct ModelInfo {
     pub base_instructions: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_messages: Option<ModelMessages>,
+    #[serde(default)]
+    pub include_skills_usage_instructions: bool,
     pub supports_reasoning_summaries: bool,
     #[serde(default)]
     pub default_reasoning_summary: ReasoningSummary,
@@ -389,6 +397,9 @@ pub struct ModelInfo {
     /// context window when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_compact_token_limit: Option<i64>,
+    /// Opaque identifier for compaction-compatible model configurations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comp_hash: Option<String>,
     /// Percentage of the context window considered usable for inputs, after
     /// reserving headroom for system prompts, tool overhead, and model output.
     #[serde(default = "default_effective_context_window_percent")]
@@ -659,6 +670,7 @@ mod tests {
             upgrade: None,
             base_instructions: "base".to_string(),
             model_messages: spec,
+            include_skills_usage_instructions: false,
             supports_reasoning_summaries: false,
             default_reasoning_summary: ReasoningSummary::Auto,
             support_verbosity: false,
@@ -671,6 +683,7 @@ mod tests {
             context_window: None,
             max_context_window: None,
             auto_compact_token_limit: None,
+            comp_hash: None,
             effective_context_window_percent: 95,
             experimental_supported_tools: vec![],
             input_modalities: default_input_modalities(),
@@ -693,25 +706,35 @@ mod tests {
 
     #[test]
     fn reasoning_effort_accepts_known_and_custom_values() {
-        let custom = ReasoningEffort::Custom("max".to_string());
-        let deserialized = from_str::<ReasoningEffort>(r#""max""#)
+        let custom = ReasoningEffort::Custom("future".to_string());
+        let deserialized = from_str::<ReasoningEffort>(r#""future""#)
             .expect("custom reasoning effort should deserialize");
         let serialized = to_string(&custom).expect("custom reasoning effort should serialize");
+        let serialized_max = to_string(&ReasoningEffort::Max).expect("Max should serialize");
+        let serialized_ultra = to_string(&ReasoningEffort::Ultra).expect("Ultra should serialize");
 
         assert_eq!(
             (
                 "high".parse(),
                 "max".parse(),
+                "ultra".parse(),
+                "future".parse(),
                 deserialized,
                 serialized,
+                serialized_max,
+                serialized_ultra,
                 custom.to_string(),
             ),
             (
                 Ok(ReasoningEffort::High),
+                Ok(ReasoningEffort::Max),
+                Ok(ReasoningEffort::Ultra),
                 Ok(custom.clone()),
                 custom,
+                r#""future""#.to_string(),
                 r#""max""#.to_string(),
-                "max".to_string(),
+                r#""ultra""#.to_string(),
+                "future".to_string(),
             )
         );
     }
@@ -936,10 +959,12 @@ mod tests {
         .expect("deserialize model info");
 
         assert_eq!(model.availability_nux, None);
+        assert!(!model.include_skills_usage_instructions);
         assert!(!model.supports_image_detail_original);
         assert_eq!(model.web_search_tool_type, WebSearchToolType::Text);
         assert!(!model.supports_search_tool);
         assert!(!model.use_responses_lite);
+        assert_eq!(model.comp_hash, None);
         assert_eq!(model.auto_review_model_override, None);
         assert_eq!(model.tool_mode, None);
     }
