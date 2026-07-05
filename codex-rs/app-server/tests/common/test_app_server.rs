@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::path::Path;
+use std::process::ExitStatus;
 use std::process::Stdio;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
@@ -11,6 +12,7 @@ use tokio::process::ChildStdin;
 use tokio::process::ChildStdout;
 
 use anyhow::Context;
+use anyhow::ensure;
 use codex_app_server_protocol::AppsListParams;
 use codex_app_server_protocol::CancelLoginAccountParams;
 use codex_app_server_protocol::ClientInfo;
@@ -23,6 +25,7 @@ use codex_app_server_protocol::CommandExecWriteParams;
 use codex_app_server_protocol::ConfigBatchWriteParams;
 use codex_app_server_protocol::ConfigReadParams;
 use codex_app_server_protocol::ConfigValueWriteParams;
+use codex_app_server_protocol::ConsumeAccountRateLimitResetCreditParams;
 use codex_app_server_protocol::ExperimentalFeatureListParams;
 use codex_app_server_protocol::FeedbackUploadParams;
 use codex_app_server_protocol::FsCopyParams;
@@ -79,14 +82,17 @@ use codex_app_server_protocol::SkillsExtraRootsSetParams;
 use codex_app_server_protocol::SkillsListParams;
 use codex_app_server_protocol::ThreadArchiveParams;
 use codex_app_server_protocol::ThreadCompactStartParams;
+use codex_app_server_protocol::ThreadDeleteParams;
 use codex_app_server_protocol::ThreadForkParams;
 use codex_app_server_protocol::ThreadInjectItemsParams;
+use codex_app_server_protocol::ThreadItemsListParams;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadMemoryModeSetParams;
 use codex_app_server_protocol::ThreadMetadataUpdateParams;
 use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::ThreadRealtimeAppendAudioParams;
+use codex_app_server_protocol::ThreadRealtimeAppendSpeechParams;
 use codex_app_server_protocol::ThreadRealtimeAppendTextParams;
 use codex_app_server_protocol::ThreadRealtimeListVoicesParams;
 use codex_app_server_protocol::ThreadRealtimeStartParams;
@@ -98,17 +104,26 @@ use codex_app_server_protocol::ThreadSetNameParams;
 use codex_app_server_protocol::ThreadSettingsUpdateParams;
 use codex_app_server_protocol::ThreadShellCommandParams;
 use codex_app_server_protocol::ThreadStartParams;
-use codex_app_server_protocol::ThreadTurnsItemsListParams;
 use codex_app_server_protocol::ThreadTurnsListParams;
 use codex_app_server_protocol::ThreadUnarchiveParams;
 use codex_app_server_protocol::ThreadUnsubscribeParams;
 use codex_app_server_protocol::TurnCompletedNotification;
+use codex_app_server_protocol::TurnEnvironmentParams;
 use codex_app_server_protocol::TurnInterruptParams;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnSteerParams;
 use codex_app_server_protocol::WindowsSandboxSetupStartParams;
+use codex_exec_server::CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR;
+use codex_exec_server::CODEX_EXEC_SERVER_NOISE_CHATGPT_ACCOUNT_ID_ENV_VAR;
+use codex_exec_server::CODEX_EXEC_SERVER_NOISE_ENVIRONMENT_ID_ENV_VAR;
+use codex_exec_server::CODEX_EXEC_SERVER_NOISE_REGISTRY_URL_ENV_VAR;
+use codex_exec_server::CODEX_EXEC_SERVER_URL_ENV_VAR;
 use codex_login::default_client::CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR;
+use core_test_support::test_codex::TestEnv;
+use core_test_support::test_codex::test_env;
 use tokio::process::Command;
+
+use crate::json_logging::JsonLogCapture;
 
 pub struct TestAppServer {
     next_request_id: AtomicI64,
@@ -120,6 +135,8 @@ pub struct TestAppServer {
     stdin: Option<ChildStdin>,
     stdout: BufReader<ChildStdout>,
     pending_messages: VecDeque<JSONRPCMessage>,
+    auto_env: Option<TestEnv>,
+    json_logs: JsonLogCapture,
 }
 
 pub const DEFAULT_CLIENT_NAME: &str = "codex-app-server-tests";
@@ -127,8 +144,113 @@ pub const DISABLE_PLUGIN_STARTUP_TASKS_ARG: &str = "--disable-plugin-startup-tas
 const DISABLE_MANAGED_CONFIG_ENV_VAR: &str = "CODEX_APP_SERVER_DISABLE_MANAGED_CONFIG";
 
 impl TestAppServer {
+    pub async fn wait_for_exit(&mut self) -> std::io::Result<ExitStatus> {
+        self.process.wait().await
+    }
+
     pub async fn new(codex_home: &Path) -> anyhow::Result<Self> {
         Self::new_with_env_and_args(codex_home, &[], &[DISABLE_PLUGIN_STARTUP_TASKS_ARG]).await
+    }
+
+    /// Starts an app server with the standard test environment and retains it
+    /// for the server's lifetime.
+    ///
+    /// Local test runs explicitly remove `CODEX_EXEC_SERVER_URL`; Docker- and
+    /// Wine-backed runs set it to the remote fixture URL. Use
+    /// [`Self::auto_env_params`] or
+    /// [`Self::send_thread_start_request_with_auto_env`] to select the matching
+    /// target-native cwd in a thread. Because `environments.toml` overrides the
+    /// URL-based configuration, this helper rejects a `codex_home` containing
+    /// that file.
+    pub async fn new_with_auto_env(codex_home: &Path) -> anyhow::Result<Self> {
+        Self::new_with_auto_env_and_env(codex_home, &[]).await
+    }
+
+    /// Starts an auto-environment app server that emits JSON logs.
+    ///
+    /// `rust_log` is the value to use for the `RUST_LOG` environment variable.
+    pub async fn new_with_auto_env_and_json_logging(
+        codex_home: &Path,
+        rust_log: impl Into<String>,
+    ) -> anyhow::Result<Self> {
+        let rust_log = rust_log.into();
+        Self::new_with_auto_env_and_env(
+            codex_home,
+            &[
+                ("LOG_FORMAT", Some("json")),
+                ("RUST_LOG", Some(rust_log.as_str())),
+            ],
+        )
+        .await
+    }
+
+    async fn new_with_auto_env_and_env(
+        codex_home: &Path,
+        extra_env_overrides: &[(&str, Option<&str>)],
+    ) -> anyhow::Result<Self> {
+        let environments_toml = codex_home.join("environments.toml");
+        ensure!(
+            !environments_toml
+                .try_exists()
+                .with_context(|| format!("check whether {} exists", environments_toml.display()))?,
+            "new_with_auto_env cannot be used when {} exists",
+            environments_toml.display()
+        );
+
+        let auto_env = test_env().await?;
+        // Noise registry configuration takes precedence over the URL-based
+        // provider, so clear inherited values to keep the selection hermetic.
+        let mut env_overrides = vec![
+            (
+                CODEX_EXEC_SERVER_URL_ENV_VAR,
+                auto_env.environment().exec_server_url(),
+            ),
+            (CODEX_EXEC_SERVER_NOISE_REGISTRY_URL_ENV_VAR, None),
+            (CODEX_EXEC_SERVER_NOISE_ENVIRONMENT_ID_ENV_VAR, None),
+            (CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR, None),
+            (CODEX_EXEC_SERVER_NOISE_CHATGPT_ACCOUNT_ID_ENV_VAR, None),
+        ];
+        env_overrides.extend_from_slice(extra_env_overrides);
+        let mut app_server = Self::new_with_env(codex_home, &env_overrides).await?;
+        app_server.auto_env = Some(auto_env);
+        Ok(app_server)
+    }
+
+    /// Returns app-server protocol parameters for the automatically selected
+    /// test environment. Returns an error unless this server was created with
+    /// [`Self::new_with_auto_env`].
+    pub fn auto_env_params(&self) -> anyhow::Result<TurnEnvironmentParams> {
+        let selection = self
+            .auto_env
+            .as_ref()
+            .context("auto environment is unavailable; use TestAppServer::new_with_auto_env")?
+            .selection();
+        Ok(TurnEnvironmentParams {
+            environment_id: selection.environment_id.clone(),
+            cwd: selection.cwd.clone().into(),
+        })
+    }
+
+    /// Waits for a JSON stderr event whose structured `event.name` field matches.
+    pub async fn wait_for_json_log_event(
+        &self,
+        event_name: &str,
+    ) -> anyhow::Result<serde_json::Value> {
+        self.json_logs.wait_for_event(event_name).await
+    }
+
+    /// Waits for the requested number of JSON stderr events with the same `event.name` field.
+    pub async fn wait_for_json_log_events(
+        &self,
+        event_name: &str,
+        count: usize,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        self.json_logs.wait_for_events(event_name, count).await
+    }
+
+    /// Returns every stderr line parsed and validated as a JSON log event.
+    pub fn json_log_events(&self) -> anyhow::Result<Vec<serde_json::Value>> {
+        self.json_logs.events()
     }
 
     pub async fn new_without_managed_config(codex_home: &Path) -> anyhow::Result<Self> {
@@ -251,10 +373,13 @@ impl TestAppServer {
 
         // Forward child's stderr to our stderr so failures are visible even
         // when stdout/stderr are captured by the test harness.
+        let json_logs = JsonLogCapture::default();
         if let Some(stderr) = process.stderr.take() {
+            let json_logs = json_logs.clone();
             let mut stderr_reader = BufReader::new(stderr).lines();
             tokio::spawn(async move {
                 while let Ok(Some(line)) = stderr_reader.next_line().await {
+                    json_logs.record(line.clone());
                     eprintln!("[mcp stderr] {line}");
                 }
             });
@@ -265,6 +390,8 @@ impl TestAppServer {
             stdin: Some(stdin),
             stdout,
             pending_messages: VecDeque::new(),
+            auto_env: None,
+            json_logs,
         })
     }
 
@@ -376,6 +503,18 @@ impl TestAppServer {
             .await
     }
 
+    /// Send an `account/rateLimitResetCredit/consume` JSON-RPC request.
+    pub async fn send_consume_account_rate_limit_reset_credit_request(
+        &mut self,
+        params: ConsumeAccountRateLimitResetCreditParams,
+    ) -> anyhow::Result<i64> {
+        self.send_request(
+            "account/rateLimitResetCredit/consume",
+            Some(serde_json::to_value(params)?),
+        )
+        .await
+    }
+
     /// Send an `account/sendAddCreditsNudgeEmail` JSON-RPC request.
     pub async fn send_add_credits_nudge_email_request(
         &mut self,
@@ -429,6 +568,21 @@ impl TestAppServer {
         self.send_request("thread/start", params).await
     }
 
+    /// Sends a `thread/start` request selecting the environment provisioned by
+    /// [`Self::new_with_auto_env`]. Returns an error if `params` already select
+    /// environments so the caller cannot accidentally override the fixture.
+    pub async fn send_thread_start_request_with_auto_env(
+        &mut self,
+        mut params: ThreadStartParams,
+    ) -> anyhow::Result<i64> {
+        ensure!(
+            params.environments.is_none(),
+            "send_thread_start_request_with_auto_env requires params.environments to be omitted"
+        );
+        params.environments = Some(vec![self.auto_env_params()?]);
+        self.send_thread_start_request(params).await
+    }
+
     /// Send a `thread/resume` JSON-RPC request.
     pub async fn send_thread_resume_request(
         &mut self,
@@ -454,6 +608,15 @@ impl TestAppServer {
     ) -> anyhow::Result<i64> {
         let params = Some(serde_json::to_value(params)?);
         self.send_request("thread/archive", params).await
+    }
+
+    /// Send a `thread/delete` JSON-RPC request.
+    pub async fn send_thread_delete_request(
+        &mut self,
+        params: ThreadDeleteParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("thread/delete", params).await
     }
 
     /// Send a `thread/name/set` JSON-RPC request.
@@ -573,13 +736,13 @@ impl TestAppServer {
         self.send_request("thread/turns/list", params).await
     }
 
-    /// Send a `thread/turns/items/list` JSON-RPC request.
-    pub async fn send_thread_turns_items_list_request(
+    /// Send a `thread/items/list` JSON-RPC request.
+    pub async fn send_thread_items_list_request(
         &mut self,
-        params: ThreadTurnsItemsListParams,
+        params: ThreadItemsListParams,
     ) -> anyhow::Result<i64> {
         let params = Some(serde_json::to_value(params)?);
-        self.send_request("thread/turns/items/list", params).await
+        self.send_request("thread/items/list", params).await
     }
 
     /// Send a `model/list` JSON-RPC request.
@@ -635,10 +798,28 @@ impl TestAppServer {
             .await
     }
 
+    /// Send a runtime-only `remoteControl/enable` JSON-RPC request.
+    pub async fn send_remote_control_ephemeral_enable_request(&mut self) -> anyhow::Result<i64> {
+        self.send_request(
+            "remoteControl/enable",
+            Some(serde_json::json!({ "ephemeral": true })),
+        )
+        .await
+    }
+
     /// Send a `remoteControl/disable` JSON-RPC request.
     pub async fn send_remote_control_disable_request(&mut self) -> anyhow::Result<i64> {
         self.send_request("remoteControl/disable", /*params*/ None)
             .await
+    }
+
+    /// Send a runtime-only `remoteControl/disable` JSON-RPC request.
+    pub async fn send_remote_control_ephemeral_disable_request(&mut self) -> anyhow::Result<i64> {
+        self.send_request(
+            "remoteControl/disable",
+            Some(serde_json::json!({ "ephemeral": true })),
+        )
+        .await
     }
 
     /// Send a `remoteControl/status/read` JSON-RPC request.
@@ -990,6 +1171,16 @@ impl TestAppServer {
             .await
     }
 
+    /// Send a `thread/realtime/appendSpeech` JSON-RPC request (v2).
+    pub async fn send_thread_realtime_append_speech_request(
+        &mut self,
+        params: ThreadRealtimeAppendSpeechParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("thread/realtime/appendSpeech", params)
+            .await
+    }
+
     /// Send a `thread/realtime/stop` JSON-RPC request (v2).
     pub async fn send_thread_realtime_stop_request(
         &mut self,
@@ -1098,6 +1289,11 @@ impl TestAppServer {
     ) -> anyhow::Result<i64> {
         let params = Some(serde_json::to_value(params)?);
         self.send_request("config/read", params).await
+    }
+
+    pub async fn send_config_requirements_read_request(&mut self) -> anyhow::Result<i64> {
+        self.send_request("configRequirements/read", /*params*/ None)
+            .await
     }
 
     pub async fn send_config_value_write_request(

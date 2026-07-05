@@ -24,14 +24,17 @@ use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::Submission;
+use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadMemoryMode;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TokenUsageInfo;
 use codex_protocol::protocol::TurnEnvironmentSelection;
+use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_protocol::user_input::UserInput;
 use codex_thread_store::StoredThread;
@@ -40,6 +43,8 @@ use codex_thread_store::ThreadMetadataPatch;
 use codex_thread_store::ThreadStoreError;
 use codex_thread_store::ThreadStoreResult;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_path_uri::LegacyAppPathString;
+use codex_utils_path_uri::PathUri;
 use rmcp::model::ReadResourceRequestParams;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -59,7 +64,7 @@ pub struct ThreadConfigSnapshot {
     pub approvals_reviewer: ApprovalsReviewer,
     pub permission_profile: PermissionProfile,
     pub active_permission_profile: Option<ActivePermissionProfile>,
-    pub cwd: AbsolutePathBuf,
+    pub environments: TurnEnvironmentSelections,
     pub workspace_roots: Vec<AbsolutePathBuf>,
     pub profile_workspace_roots: Vec<AbsolutePathBuf>,
     pub ephemeral: bool,
@@ -68,9 +73,11 @@ pub struct ThreadConfigSnapshot {
     pub personality: Option<Personality>,
     pub collaboration_mode: CollaborationMode,
     pub session_source: SessionSource,
+    pub history_mode: ThreadHistoryMode,
     pub forked_from_thread_id: Option<ThreadId>,
     pub parent_thread_id: Option<ThreadId>,
     pub thread_source: Option<ThreadSource>,
+    pub originator: String,
 }
 
 /// Explains why `CodexThread::try_start_turn_if_idle` rejected an automatic
@@ -114,10 +121,18 @@ impl TryStartTurnIfIdleError {
 }
 
 impl ThreadConfigSnapshot {
+    pub fn cwd(&self) -> &AbsolutePathBuf {
+        &self.environments.legacy_fallback_cwd
+    }
+
+    pub fn environment_selections(&self) -> &[TurnEnvironmentSelection] {
+        &self.environments.environments
+    }
+
     pub fn sandbox_policy(&self) -> SandboxPolicy {
         codex_sandboxing::compatibility_sandbox_policy_for_permission_profile(
             &self.permission_profile,
-            self.cwd.as_path(),
+            self.cwd().as_path(),
         )
     }
 }
@@ -125,7 +140,7 @@ impl ThreadConfigSnapshot {
 /// Thread settings overrides that app-server validates before starting a turn.
 #[derive(Clone, Default)]
 pub struct CodexThreadSettingsOverrides {
-    pub cwd: Option<AbsolutePathBuf>,
+    pub environments: Option<TurnEnvironmentSelections>,
     pub workspace_roots: Option<Vec<AbsolutePathBuf>>,
     pub profile_workspace_roots: Option<Vec<AbsolutePathBuf>>,
     pub approval_policy: Option<AskForApproval>,
@@ -148,6 +163,14 @@ pub struct CodexThread {
     session_configured: SessionConfiguredEvent,
     rollout_path: Option<PathBuf>,
     out_of_band_elicitation_count: Mutex<u64>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct BackgroundTerminalInfo {
+    pub item_id: String,
+    pub process_id: String,
+    pub command: String,
+    pub cwd: PathUri,
 }
 
 /// Conduit for the bidirectional stream of messages that compose a thread
@@ -316,6 +339,13 @@ impl CodexThread {
             .await
     }
 
+    pub async fn set_openai_form_elicitation_support(&self, supported: bool) -> anyhow::Result<()> {
+        self.codex
+            .session
+            .set_openai_form_elicitation_support(supported)
+            .await
+    }
+
     /// Preview persistent thread settings overrides without committing them.
     pub async fn preview_thread_settings_overrides(
         &self,
@@ -330,7 +360,7 @@ impl CodexThread {
         overrides: CodexThreadSettingsOverrides,
     ) -> SessionSettingsUpdate {
         let CodexThreadSettingsOverrides {
-            cwd,
+            environments,
             workspace_roots,
             profile_workspace_roots,
             approval_policy,
@@ -357,7 +387,7 @@ impl CodexThread {
         };
 
         SessionSettingsUpdate {
-            cwd,
+            environments,
             workspace_roots,
             profile_workspace_roots,
             approval_policy,
@@ -387,6 +417,17 @@ impl CodexThread {
         self.codex.agent_status().await
     }
 
+    pub async fn list_background_terminals(&self) -> Vec<BackgroundTerminalInfo> {
+        self.codex.session.list_background_terminals().await
+    }
+
+    pub async fn terminate_background_terminal(&self, process_id: i32) -> bool {
+        self.codex
+            .session
+            .terminate_background_terminal(process_id)
+            .await
+    }
+
     pub(crate) fn subscribe_status(&self) -> watch::Receiver<AgentStatus> {
         self.codex.agent_status.clone()
     }
@@ -409,6 +450,7 @@ impl CodexThread {
             role: "user".to_string(),
             content: vec![ContentItem::InputText { text: message }],
             phase: None,
+            internal_chat_message_metadata_passthrough: None,
         };
         self.codex
             .session
@@ -426,9 +468,15 @@ impl CodexThread {
 
         let turn_context = self.codex.session.new_default_turn().await;
         if self.codex.session.reference_context_item().await.is_none() {
+            // This history-only API runs without run_turn, so it owns its initial step.
+            let step_context = self
+                .codex
+                .session
+                .capture_step_context(Arc::clone(&turn_context))
+                .await;
             self.codex
                 .session
-                .record_context_updates_and_set_reference_context_item(turn_context.as_ref())
+                .record_context_updates_and_set_reference_context_item(step_context.as_ref())
                 .await;
         }
         self.codex
@@ -505,6 +553,18 @@ impl CodexThread {
         live_thread.update_metadata(patch, include_archived).await
     }
 
+    /// Appends rollout items through the live thread so derived metadata stays in sync.
+    pub async fn append_rollout_items(&self, items: &[RolloutItem]) -> ThreadStoreResult<()> {
+        let live_thread = self
+            .codex
+            .session
+            .live_thread_for_persistence("append rollout items")
+            .map_err(|err| ThreadStoreError::Internal {
+                message: err.to_string(),
+            })?;
+        live_thread.append_items(items).await
+    }
+
     pub fn state_db(&self) -> Option<StateDbHandle> {
         self.codex.state_db()
     }
@@ -514,12 +574,37 @@ impl CodexThread {
     }
 
     /// Returns the files that supplied the thread's loaded model instructions.
-    pub async fn instruction_sources(&self) -> Vec<AbsolutePathBuf> {
+    pub async fn instruction_sources(&self) -> Vec<PathUri> {
         self.codex.instruction_sources().await
+    }
+
+    /// Returns loaded instruction sources rendered as legacy app-server path strings.
+    pub async fn legacy_instruction_sources(&self) -> Vec<LegacyAppPathString> {
+        self.instruction_sources()
+            .await
+            .into_iter()
+            .map(Into::into)
+            .collect()
     }
 
     pub async fn config(&self) -> Arc<crate::config::Config> {
         self.codex.session.get_config().await
+    }
+
+    /// Resolves the MCP runtime configuration using this thread's extension data.
+    pub async fn runtime_mcp_config(&self, config: &crate::config::Config) -> codex_mcp::McpConfig {
+        self.codex.session.runtime_mcp_config(config).await
+    }
+
+    /// Returns the exact MCP config, environment bindings, and manager most recently published.
+    pub async fn current_mcp_runtime(&self) -> Arc<crate::session::McpRuntimeSnapshot> {
+        let turn_context = self.codex.session.new_default_turn().await;
+        self.codex
+            .session
+            .capture_step_context(turn_context)
+            .await
+            .mcp
+            .clone()
     }
 
     pub fn multi_agent_version(&self) -> Option<MultiAgentVersion> {
@@ -543,8 +628,9 @@ impl CodexThread {
         uri: &str,
     ) -> anyhow::Result<serde_json::Value> {
         let result = self
-            .codex
-            .session
+            .current_mcp_runtime()
+            .await
+            .manager_arc()
             .read_resource(server, ReadResourceRequestParams::new(uri))
             .await?;
 
@@ -558,8 +644,9 @@ impl CodexThread {
         arguments: Option<serde_json::Value>,
         meta: Option<serde_json::Value>,
     ) -> anyhow::Result<CallToolResult> {
-        self.codex
-            .session
+        self.current_mcp_runtime()
+            .await
+            .manager_arc()
             .call_tool(server, tool, arguments, meta)
             .await
     }

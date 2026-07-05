@@ -1,4 +1,5 @@
 use super::*;
+use codex_protocol::config_types::MultiAgentMode;
 
 pub(super) const THREAD_UNLOADING_DELAY: Duration = Duration::from_secs(30 * 60);
 
@@ -627,6 +628,8 @@ pub(super) async fn handle_pending_thread_resume_request(
         }
     }
 
+    let config_snapshot = pending.config_snapshot;
+    let cwd = config_snapshot.cwd().clone();
     let ThreadConfigSnapshot {
         model,
         model_provider_id,
@@ -635,11 +638,11 @@ pub(super) async fn handle_pending_thread_resume_request(
         approvals_reviewer,
         permission_profile,
         active_permission_profile,
-        cwd,
         workspace_roots,
         reasoning_effort,
+        originator,
         ..
-    } = pending.config_snapshot;
+    } = config_snapshot;
     let instruction_sources = pending.instruction_sources;
     let sandbox = thread_response_sandbox_policy(&permission_profile, cwd.as_path());
     let active_permission_profile =
@@ -660,9 +663,12 @@ pub(super) async fn handle_pending_thread_resume_request(
         sandbox,
         active_permission_profile,
         reasoning_effort,
+        multi_agent_mode: MultiAgentMode::ExplicitRequestOnly,
         initial_turns_page,
     };
-    outgoing.send_response(request_id, response).await;
+    outgoing
+        .send_response_with_thread_originator(request_id, response, originator)
+        .await;
     // Match cold resume: metadata-only resume should attach the listener without
     // paying the cost of turn reconstruction for historical usage replay.
     if let Some(token_usage_thread) = token_usage_thread {

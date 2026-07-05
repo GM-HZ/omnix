@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::Duration;
@@ -26,7 +27,6 @@ use codex_app_server_protocol::AppReview;
 use codex_app_server_protocol::AppScreenshot;
 use codex_app_server_protocol::AppsListParams;
 use codex_app_server_protocol::AppsListResponse;
-use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
@@ -35,7 +35,9 @@ use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_login::AuthDotJson;
+use codex_login::AuthKeyringBackendKind;
 use codex_login::save_auth;
+use codex_protocol::auth::AuthMode;
 use pretty_assertions::assert_eq;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::JsonObject;
@@ -95,6 +97,8 @@ async fn list_apps_returns_empty_with_api_key_auth() -> Result<()> {
         description: Some("Beta connector".to_string()),
         logo_url: None,
         logo_url_dark: None,
+        icon_assets: None,
+        icon_dark_assets: None,
         distribution_channel: None,
         branding: None,
         app_metadata: None,
@@ -119,8 +123,10 @@ async fn list_apps_returns_empty_with_api_key_auth() -> Result<()> {
             last_refresh: None,
             agent_identity: None,
             personal_access_token: None,
+            bedrock_api_key: None,
         },
         AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
     )?;
 
     let mut mcp = TestAppServer::new(codex_home.path()).await?;
@@ -158,6 +164,8 @@ async fn list_apps_returns_empty_when_workspace_codex_plugins_disabled() -> Resu
         description: Some("Beta connector".to_string()),
         logo_url: None,
         logo_url_dark: None,
+        icon_assets: None,
+        icon_dark_assets: None,
         distribution_channel: None,
         branding: None,
         app_metadata: None,
@@ -213,6 +221,50 @@ async fn list_apps_returns_empty_when_workspace_codex_plugins_disabled() -> Resu
 }
 
 #[tokio::test]
+async fn list_apps_includes_plugin_apps_for_chatgpt_auth() -> Result<()> {
+    let (server_url, server_handle) =
+        start_apps_server_with_delays(Vec::new(), Vec::new(), Duration::ZERO, Duration::ZERO)
+            .await?;
+
+    let codex_home = TempDir::new()?;
+    write_connectors_and_plugins_config(codex_home.path(), &server_url)?;
+    write_plugin_app_fixture(codex_home.path(), "sample", "connector_sample")?;
+    write_chatgpt_auth(
+        codex_home.path(),
+        ChatGptAuthFixture::new("chatgpt-token")
+            .account_id("account-123")
+            .chatgpt_user_id("user-plugin-apps")
+            .chatgpt_account_id("account-123"),
+        AuthCredentialsStoreMode::File,
+    )?;
+
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    let request_id = mcp
+        .send_apps_list_request(AppsListParams {
+            limit: None,
+            cursor: None,
+            thread_id: None,
+            force_refetch: false,
+        })
+        .await?;
+    let response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    let AppsListResponse { data, next_cursor } = to_response(response)?;
+
+    assert!(data.iter().any(|app| app.id == "connector_sample"));
+    assert!(next_cursor.is_none());
+
+    server_handle.abort();
+    let _ = server_handle.await;
+    Ok(())
+}
+
+#[tokio::test]
 async fn list_apps_uses_thread_feature_flag_when_thread_id_is_provided() -> Result<()> {
     let connectors = vec![AppInfo {
         id: "beta".to_string(),
@@ -220,6 +272,8 @@ async fn list_apps_uses_thread_feature_flag_when_thread_id_is_provided() -> Resu
         description: Some("Beta connector".to_string()),
         logo_url: None,
         logo_url_dark: None,
+        icon_assets: None,
+        icon_dark_assets: None,
         distribution_channel: None,
         branding: None,
         app_metadata: None,
@@ -244,11 +298,11 @@ async fn list_apps_uses_thread_feature_flag_when_thread_id_is_provided() -> Resu
         AuthCredentialsStoreMode::File,
     )?;
 
-    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new_with_auto_env(codex_home.path()).await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
 
     let start_request = mcp
-        .send_thread_start_request(ThreadStartParams::default())
+        .send_thread_start_request_with_auto_env(ThreadStartParams::default())
         .await?;
     let start_response: JSONRPCResponse = timeout(
         DEFAULT_TIMEOUT,
@@ -317,12 +371,15 @@ connectors = false
 
 #[tokio::test]
 async fn list_apps_keeps_apps_with_app_only_tools_accessible() -> Result<()> {
+    let connector_id = "connector_2b0a9009c9c64bf9933a3dae3f2b1254";
     let connectors = vec![AppInfo {
-        id: "beta".to_string(),
-        name: "Beta".to_string(),
-        description: Some("Beta connector".to_string()),
+        id: connector_id.to_string(),
+        name: "Formerly Blocked".to_string(),
+        description: Some("Formerly blocked connector".to_string()),
         logo_url: None,
         logo_url_dark: None,
+        icon_assets: None,
+        icon_dark_assets: None,
         distribution_channel: None,
         branding: None,
         app_metadata: None,
@@ -332,7 +389,7 @@ async fn list_apps_keeps_apps_with_app_only_tools_accessible() -> Result<()> {
         is_enabled: true,
         plugin_display_names: Vec::new(),
     }];
-    let mut app_only_tool = connector_tool("beta", "Beta App")?;
+    let mut app_only_tool = connector_tool(connector_id, "Formerly Blocked")?;
     app_only_tool
         .meta
         .as_mut()
@@ -373,7 +430,7 @@ async fn list_apps_keeps_apps_with_app_only_tools_accessible() -> Result<()> {
     let AppsListResponse { data, next_cursor } = to_response(response)?;
 
     assert_eq!(data.len(), 1);
-    assert_eq!(data[0].id, "beta");
+    assert_eq!(data[0].id, connector_id);
     assert!(data[0].is_accessible);
     assert!(next_cursor.is_none());
 
@@ -390,6 +447,8 @@ async fn list_apps_reports_is_enabled_from_config() -> Result<()> {
         description: Some("Beta connector".to_string()),
         logo_url: None,
         logo_url_dark: None,
+        icon_assets: None,
+        icon_dark_assets: None,
         distribution_channel: None,
         branding: None,
         app_metadata: None,
@@ -500,6 +559,8 @@ async fn list_apps_emits_updates_and_returns_after_both_lists_load() -> Result<(
             description: Some("Alpha connector".to_string()),
             logo_url: Some("https://example.com/alpha.png".to_string()),
             logo_url_dark: None,
+            icon_assets: None,
+            icon_dark_assets: None,
             distribution_channel: None,
             branding: alpha_branding.clone(),
             app_metadata: alpha_app_metadata.clone(),
@@ -515,6 +576,8 @@ async fn list_apps_emits_updates_and_returns_after_both_lists_load() -> Result<(
             description: None,
             logo_url: None,
             logo_url_dark: None,
+            icon_assets: None,
+            icon_dark_assets: None,
             distribution_channel: None,
             branding: None,
             app_metadata: None,
@@ -564,6 +627,8 @@ async fn list_apps_emits_updates_and_returns_after_both_lists_load() -> Result<(
         description: None,
         logo_url: None,
         logo_url_dark: None,
+        icon_assets: None,
+        icon_dark_assets: None,
         distribution_channel: None,
         branding: None,
         app_metadata: None,
@@ -584,6 +649,8 @@ async fn list_apps_emits_updates_and_returns_after_both_lists_load() -> Result<(
             description: None,
             logo_url: None,
             logo_url_dark: None,
+            icon_assets: None,
+            icon_dark_assets: None,
             distribution_channel: None,
             branding: None,
             app_metadata: None,
@@ -599,6 +666,8 @@ async fn list_apps_emits_updates_and_returns_after_both_lists_load() -> Result<(
             description: Some("Alpha connector".to_string()),
             logo_url: Some("https://example.com/alpha.png".to_string()),
             logo_url_dark: None,
+            icon_assets: None,
+            icon_dark_assets: None,
             distribution_channel: None,
             branding: alpha_branding,
             app_metadata: alpha_app_metadata,
@@ -640,6 +709,8 @@ async fn list_apps_waits_for_accessible_data_before_emitting_directory_updates()
             description: Some("Alpha connector".to_string()),
             logo_url: Some("https://example.com/alpha.png".to_string()),
             logo_url_dark: None,
+            icon_assets: None,
+            icon_dark_assets: None,
             distribution_channel: None,
             branding: None,
             app_metadata: None,
@@ -655,6 +726,8 @@ async fn list_apps_waits_for_accessible_data_before_emitting_directory_updates()
             description: None,
             logo_url: None,
             logo_url_dark: None,
+            icon_assets: None,
+            icon_dark_assets: None,
             distribution_channel: None,
             branding: None,
             app_metadata: None,
@@ -705,6 +778,8 @@ async fn list_apps_waits_for_accessible_data_before_emitting_directory_updates()
             description: None,
             logo_url: None,
             logo_url_dark: None,
+            icon_assets: None,
+            icon_dark_assets: None,
             distribution_channel: None,
             branding: None,
             app_metadata: None,
@@ -720,6 +795,8 @@ async fn list_apps_waits_for_accessible_data_before_emitting_directory_updates()
             description: Some("Alpha connector".to_string()),
             logo_url: Some("https://example.com/alpha.png".to_string()),
             logo_url_dark: None,
+            icon_assets: None,
+            icon_dark_assets: None,
             distribution_channel: None,
             branding: None,
             app_metadata: None,
@@ -764,6 +841,8 @@ async fn list_apps_does_not_emit_empty_interim_updates() -> Result<()> {
         description: Some("Alpha connector".to_string()),
         logo_url: None,
         logo_url_dark: None,
+        icon_assets: None,
+        icon_dark_assets: None,
         distribution_channel: None,
         branding: None,
         app_metadata: None,
@@ -820,6 +899,8 @@ async fn list_apps_does_not_emit_empty_interim_updates() -> Result<()> {
         description: Some("Alpha connector".to_string()),
         logo_url: None,
         logo_url_dark: None,
+        icon_assets: None,
+        icon_dark_assets: None,
         distribution_channel: None,
         branding: None,
         app_metadata: None,
@@ -855,6 +936,8 @@ async fn list_apps_paginates_results() -> Result<()> {
             description: Some("Alpha connector".to_string()),
             logo_url: None,
             logo_url_dark: None,
+            icon_assets: None,
+            icon_dark_assets: None,
             distribution_channel: None,
             branding: None,
             app_metadata: None,
@@ -870,6 +953,8 @@ async fn list_apps_paginates_results() -> Result<()> {
             description: None,
             logo_url: None,
             logo_url_dark: None,
+            icon_assets: None,
+            icon_dark_assets: None,
             distribution_channel: None,
             branding: None,
             app_metadata: None,
@@ -928,6 +1013,8 @@ async fn list_apps_paginates_results() -> Result<()> {
         description: None,
         logo_url: None,
         logo_url_dark: None,
+        icon_assets: None,
+        icon_dark_assets: None,
         distribution_channel: None,
         branding: None,
         app_metadata: None,
@@ -972,6 +1059,8 @@ async fn list_apps_paginates_results() -> Result<()> {
         description: Some("Alpha connector".to_string()),
         logo_url: None,
         logo_url_dark: None,
+        icon_assets: None,
+        icon_dark_assets: None,
         distribution_channel: None,
         branding: None,
         app_metadata: None,
@@ -997,6 +1086,8 @@ async fn list_apps_force_refetch_preserves_previous_cache_on_failure() -> Result
         description: Some("Beta connector".to_string()),
         logo_url: None,
         logo_url_dark: None,
+        icon_assets: None,
+        icon_dark_assets: None,
         distribution_channel: None,
         branding: None,
         app_metadata: None,
@@ -1102,6 +1193,8 @@ async fn list_apps_force_refetch_patches_updates_from_cached_snapshots() -> Resu
             description: Some("Alpha v1".to_string()),
             logo_url: None,
             logo_url_dark: None,
+            icon_assets: None,
+            icon_dark_assets: None,
             distribution_channel: None,
             branding: None,
             app_metadata: None,
@@ -1117,6 +1210,8 @@ async fn list_apps_force_refetch_patches_updates_from_cached_snapshots() -> Resu
             description: Some("Beta v1".to_string()),
             logo_url: None,
             logo_url_dark: None,
+            icon_assets: None,
+            icon_dark_assets: None,
             distribution_channel: None,
             branding: None,
             app_metadata: None,
@@ -1167,6 +1262,8 @@ async fn list_apps_force_refetch_patches_updates_from_cached_snapshots() -> Resu
             description: None,
             logo_url: None,
             logo_url_dark: None,
+            icon_assets: None,
+            icon_dark_assets: None,
             distribution_channel: None,
             branding: None,
             app_metadata: None,
@@ -1188,6 +1285,8 @@ async fn list_apps_force_refetch_patches_updates_from_cached_snapshots() -> Resu
                 description: Some("Beta v1".to_string()),
                 logo_url: None,
                 logo_url_dark: None,
+                icon_assets: None,
+                icon_dark_assets: None,
                 distribution_channel: None,
                 branding: None,
                 app_metadata: None,
@@ -1203,6 +1302,8 @@ async fn list_apps_force_refetch_patches_updates_from_cached_snapshots() -> Resu
                 description: Some("Alpha v1".to_string()),
                 logo_url: None,
                 logo_url_dark: None,
+                icon_assets: None,
+                icon_dark_assets: None,
                 distribution_channel: None,
                 branding: None,
                 app_metadata: None,
@@ -1233,6 +1334,8 @@ async fn list_apps_force_refetch_patches_updates_from_cached_snapshots() -> Resu
         description: Some("Alpha v2".to_string()),
         logo_url: None,
         logo_url_dark: None,
+        icon_assets: None,
+        icon_dark_assets: None,
         distribution_channel: None,
         branding: None,
         app_metadata: None,
@@ -1263,6 +1366,8 @@ async fn list_apps_force_refetch_patches_updates_from_cached_snapshots() -> Resu
                 description: Some("Beta v1".to_string()),
                 logo_url: None,
                 logo_url_dark: None,
+                icon_assets: None,
+                icon_dark_assets: None,
                 distribution_channel: None,
                 branding: None,
                 app_metadata: None,
@@ -1278,6 +1383,8 @@ async fn list_apps_force_refetch_patches_updates_from_cached_snapshots() -> Resu
                 description: Some("Alpha v1".to_string()),
                 logo_url: None,
                 logo_url_dark: None,
+                icon_assets: None,
+                icon_dark_assets: None,
                 distribution_channel: None,
                 branding: None,
                 app_metadata: None,
@@ -1306,6 +1413,8 @@ async fn list_apps_force_refetch_patches_updates_from_cached_snapshots() -> Resu
         description: Some("Alpha v2".to_string()),
         logo_url: None,
         logo_url_dark: None,
+        icon_assets: None,
+        icon_dark_assets: None,
         distribution_channel: None,
         branding: None,
         app_metadata: None,
@@ -1424,7 +1533,7 @@ impl ServerHandler for AppListMcpServer {
     }
 }
 
-async fn start_apps_server_with_delays(
+pub(super) async fn start_apps_server_with_delays(
     connectors: Vec<AppInfo>,
     tools: Vec<Tool>,
     directory_delay: Duration,
@@ -1516,7 +1625,7 @@ async fn start_apps_server_with_delays_and_control_inner(
             get(workspace_settings_response),
         )
         .with_state(state)
-        .nest_service("/api/codex/apps", mcp_service);
+        .nest_service("/api/codex/ps/mcp", mcp_service);
 
     let handle = tokio::spawn(async move {
         let _ = axum::serve(listener, router).await;
@@ -1584,7 +1693,7 @@ async fn list_directory_connectors(
     }
 }
 
-fn connector_tool(connector_id: &str, connector_name: &str) -> Result<Tool> {
+pub(super) fn connector_tool(connector_id: &str, connector_name: &str) -> Result<Tool> {
     let schema: JsonObject = serde_json::from_value(json!({
         "type": "object",
         "additionalProperties": false
@@ -1619,4 +1728,46 @@ connectors = true
 "#
         ),
     )
+}
+
+fn write_connectors_and_plugins_config(codex_home: &Path, base_url: &str) -> std::io::Result<()> {
+    let config_toml = codex_home.join("config.toml");
+    std::fs::write(
+        config_toml,
+        format!(
+            r#"
+chatgpt_base_url = "{base_url}"
+mcp_oauth_credentials_store = "file"
+
+[features]
+connectors = true
+plugins = true
+
+[plugins."sample@test"]
+enabled = true
+"#
+        ),
+    )
+}
+
+fn write_plugin_app_fixture(codex_home: &Path, plugin_name: &str, app_id: &str) -> Result<()> {
+    let plugin_root = codex_home
+        .join("plugins/cache")
+        .join("test")
+        .join(plugin_name)
+        .join("local");
+    std::fs::create_dir_all(plugin_root.join(".codex-plugin"))?;
+    std::fs::write(
+        plugin_root.join(".codex-plugin/plugin.json"),
+        format!(r#"{{"name":"{plugin_name}"}}"#),
+    )?;
+    std::fs::write(
+        plugin_root.join(".app.json"),
+        serde_json::to_vec_pretty(&json!({
+            "apps": {
+                plugin_name: { "id": app_id }
+            }
+        }))?,
+    )?;
+    Ok(())
 }
