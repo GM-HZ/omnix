@@ -982,7 +982,7 @@ fn ensure_personal_access_token_workspace_allowed(
     expected_workspace_ids: Option<&[String]>,
     auth: &PersonalAccessTokenAuth,
 ) -> std::io::Result<()> {
-    crate::server::ensure_workspace_account_allowed(expected_workspace_ids, auth.account_id())
+    crate::device_code_auth::ensure_workspace_account_allowed(expected_workspace_ids, auth.account_id())
         .map_err(|message| std::io::Error::new(std::io::ErrorKind::PermissionDenied, message))
 }
 
