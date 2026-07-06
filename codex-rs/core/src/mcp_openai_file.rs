@@ -287,7 +287,6 @@ mod tests {
         let dir = tempdir().expect("temp dir");
         let file_path = dir.path().join("oversized.bin");
         let file = std::fs::File::create(&file_path).expect("create sparse file");
-            .expect("size sparse file");
         set_primary_environment_cwd(&mut turn_context, dir.path());
 
         let error = build_uploaded_argument_value(
