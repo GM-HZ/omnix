@@ -51,6 +51,15 @@ use tracing::info;
 use tracing::warn;
 
 const DEFAULT_ISSUER: &str = "https://auth.openai.com";
+
+/// Resolve the OAuth issuer from environment variables, falling back to default.
+fn auth_issuer() -> String {
+    std::env::var("OMNIX_AUTH_ISSUER")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .or_else(|| std::env::var("CODEX_AUTH_ISSUER").ok().filter(|v| !v.is_empty()))
+        .unwrap_or_else(|| DEFAULT_ISSUER.to_string())
+}
 const DEFAULT_PORT: u16 = 1455;
 // Keep in sync with the Codex CLI Hydra redirect URI allow-list.
 const FALLBACK_PORT: u16 = 1457;
@@ -88,7 +97,7 @@ impl ServerOptions {
         Self {
             codex_home,
             client_id,
-            issuer: DEFAULT_ISSUER.to_string(),
+            issuer: auth_issuer(),
             port: DEFAULT_PORT,
             open_browser: true,
             force_state: None,
@@ -882,7 +891,7 @@ fn compose_success_url(
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
-    let platform_url = if issuer == DEFAULT_ISSUER {
+    let platform_url = if issuer == auth_issuer() {
         "https://platform.openai.com"
     } else {
         "https://platform.api.openai.org"

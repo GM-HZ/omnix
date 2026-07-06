@@ -11,7 +11,7 @@ use tracing::warn;
 
 use crate::client::ModelClientSession;
 use crate::guardian::routes_approval_to_guardian;
-use crate::responses_metadata::CodexResponsesRequestKind;
+use crate::request_metadata::RequestKind;
 use crate::session::INITIAL_SUBMIT_ID;
 use crate::session::session::Session;
 use crate::session::turn::build_prompt;
@@ -301,7 +301,7 @@ async fn schedule_startup_prewarm_inner(
         .to_responses_metadata(
             session.installation_id.clone(),
             window_id,
-            CodexResponsesRequestKind::Prewarm,
+            RequestKind::Prewarm,
         );
     let mut client_session = session.services.model_client.new_session();
     let websocket_warmup_started_at = Instant::now();

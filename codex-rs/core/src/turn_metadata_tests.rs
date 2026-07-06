@@ -1,9 +1,9 @@
 use super::*;
 
-use crate::responses_metadata::CodexResponsesRequestKind;
-use crate::responses_metadata::CompactionTurnMetadata;
-use crate::responses_metadata::INSTALLATION_ID_KEY;
-use crate::responses_metadata::WINDOW_ID_KEY;
+use crate::request_metadata::RequestKind;
+use crate::request_metadata::CompactionTurnMetadata;
+use crate::request_metadata::INSTALLATION_ID_KEY;
+use crate::request_metadata::WINDOW_ID_KEY;
 use crate::sandbox_tags::permission_profile_sandbox_tag;
 use codex_analytics::CompactionImplementation;
 use codex_analytics::CompactionPhase;
@@ -34,7 +34,7 @@ fn test_mcp_turn_metadata_context() -> McpTurnMetadataContext<'static> {
 fn test_responses_metadata_json(
     state: &TurnMetadataState,
     window_id: &str,
-    request_kind: CodexResponsesRequestKind,
+    request_kind: RequestKind,
 ) -> String {
     state
         .to_responses_metadata(
@@ -47,7 +47,7 @@ fn test_responses_metadata_json(
 }
 
 fn test_turn_responses_metadata_json(state: &TurnMetadataState, window_id: &str) -> String {
-    test_responses_metadata_json(state, window_id, CodexResponsesRequestKind::Turn)
+    test_responses_metadata_json(state, window_id, RequestKind::Turn)
 }
 
 fn test_compaction_responses_metadata_json(
@@ -58,7 +58,7 @@ fn test_compaction_responses_metadata_json(
     test_responses_metadata_json(
         state,
         window_id,
-        CodexResponsesRequestKind::Compaction(compaction),
+        RequestKind::Compaction(compaction),
     )
 }
 

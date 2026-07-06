@@ -9,9 +9,9 @@ use crate::hook_runtime::PostCompactHookOutcome;
 use crate::hook_runtime::PreCompactHookOutcome;
 use crate::hook_runtime::run_post_compact_hooks;
 use crate::hook_runtime::run_pre_compact_hooks;
-use crate::responses_metadata::CodexResponsesMetadata;
-use crate::responses_metadata::CodexResponsesRequestKind;
-use crate::responses_metadata::CompactionTurnMetadata;
+use crate::request_metadata::RequestMetadata;
+use crate::request_metadata::RequestKind;
+use crate::request_metadata::CompactionTurnMetadata;
 #[cfg(test)]
 use crate::session::PreviousTurnSettings;
 use crate::session::session::Session;
@@ -245,7 +245,7 @@ async fn run_compact_task_inner_impl(
     let responses_metadata = turn_context.turn_metadata_state.to_responses_metadata(
         sess.installation_id.clone(),
         window_id,
-        CodexResponsesRequestKind::Compaction(compaction_metadata),
+        RequestKind::Compaction(compaction_metadata),
     );
 
     loop {
@@ -662,7 +662,7 @@ async fn drain_to_completed(
     sess: &Session,
     turn_context: &TurnContext,
     client_session: &mut ModelClientSession,
-    responses_metadata: &CodexResponsesMetadata,
+    responses_metadata: &RequestMetadata,
     prompt: &Prompt,
 ) -> CodexResult<()> {
     let mut stream = client_session

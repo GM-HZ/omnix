@@ -12,21 +12,21 @@ use codex_protocol::protocol::WarningEvent;
 use tracing::warn;
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum ResponsesStreamRequest {
+pub(crate) enum StreamRequestKind {
     Sampling,
     RemoteCompactionV2,
 }
 
 /// Handles a retryable stream error and returns `Ok(())` when the caller should
 /// retry the request loop.
-pub(crate) async fn handle_retryable_response_stream_error(
+pub(crate) async fn handle_retryable_stream_error(
     retries: &mut u64,
     max_retries: u64,
     err: CodexErr,
     client_session: &mut ModelClientSession,
     sess: &Session,
     turn_context: &TurnContext,
-    request: ResponsesStreamRequest,
+    request: StreamRequestKind,
 ) -> Result<(), CodexErr> {
     if *retries >= max_retries
         && client_session.try_switch_fallback_transport(
@@ -79,7 +79,7 @@ pub(crate) async fn handle_retryable_response_stream_error(
 }
 
 fn log_retry(
-    request: ResponsesStreamRequest,
+    request: StreamRequestKind,
     turn_context: &TurnContext,
     err: &CodexErr,
     retries: u64,
@@ -87,12 +87,12 @@ fn log_retry(
     delay: Duration,
 ) {
     match request {
-        ResponsesStreamRequest::Sampling => {
+        StreamRequestKind::Sampling => {
             warn!(
                 "stream disconnected - retrying sampling request ({retries}/{max_retries} in {delay:?})...",
             );
         }
-        ResponsesStreamRequest::RemoteCompactionV2 => {
+        StreamRequestKind::RemoteCompactionV2 => {
             warn!(
                 turn_id = %turn_context.sub_id,
                 retries,

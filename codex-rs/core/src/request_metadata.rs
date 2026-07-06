@@ -21,7 +21,7 @@ use crate::client::X_CODEX_INSTALLATION_ID_HEADER;
 use crate::client::X_CODEX_PARENT_THREAD_ID_HEADER;
 use crate::client::X_CODEX_TURN_METADATA_HEADER;
 use crate::client::X_CODEX_WINDOW_ID_HEADER;
-use crate::client::X_OPENAI_SUBAGENT_HEADER;
+use crate::client::X_SUBAGENT_HEADER;
 
 pub(crate) const INSTALLATION_ID_KEY: &str = "installation_id";
 pub(crate) const SESSION_ID_KEY: &str = "session_id";
@@ -51,7 +51,7 @@ const RESERVED_METADATA_KEYS: &[&str] = &[
     X_CODEX_WINDOW_ID_HEADER,
     X_CODEX_TURN_METADATA_HEADER,
     X_CODEX_PARENT_THREAD_ID_HEADER,
-    X_OPENAI_SUBAGENT_HEADER,
+    X_SUBAGENT_HEADER,
     REQUEST_KIND_KEY,
     COMPACTION_KEY,
     TURN_STARTED_AT_UNIX_MS_KEY,
@@ -96,25 +96,25 @@ impl CompactionTurnMetadata {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum CodexResponsesRequestKind {
+pub(crate) enum RequestKind {
     Turn,
     Prewarm,
     Compaction(CompactionTurnMetadata),
     Memory,
 }
 
-impl CodexResponsesRequestKind {
+impl RequestKind {
     fn metadata(self) -> (&'static str, Option<CompactionTurnMetadata>) {
         match self {
-            CodexResponsesRequestKind::Turn => ("turn", None),
-            CodexResponsesRequestKind::Prewarm => ("prewarm", None),
-            CodexResponsesRequestKind::Compaction(metadata) => ("compaction", Some(metadata)),
-            CodexResponsesRequestKind::Memory => ("memory", None),
+            RequestKind::Turn => ("turn", None),
+            RequestKind::Prewarm => ("prewarm", None),
+            RequestKind::Compaction(metadata) => ("compaction", Some(metadata)),
+            RequestKind::Memory => ("memory", None),
         }
     }
 
     fn has_turn_identity(self) -> bool {
-        !matches!(self, CodexResponsesRequestKind::Memory)
+        !matches!(self, RequestKind::Memory)
     }
 }
 
@@ -135,13 +135,13 @@ pub(crate) struct TurnMetadataWorkspace {
 /// headers are generated compatibility projections of this snapshot, not separate sources of
 /// truth.
 #[derive(Clone, Debug)]
-pub struct CodexResponsesMetadata {
+pub struct RequestMetadata {
     pub(crate) installation_id: String,
     pub(crate) session_id: String,
     pub(crate) thread_id: String,
     pub(crate) turn_id: Option<String>,
     pub(crate) window_id: String,
-    pub(crate) request_kind: Option<CodexResponsesRequestKind>,
+    pub(crate) request_kind: Option<RequestKind>,
     pub(crate) forked_from_thread_id: Option<ThreadId>,
     pub(crate) parent_thread_id: Option<ThreadId>,
     pub(crate) subagent_header: Option<String>,
@@ -153,7 +153,7 @@ pub struct CodexResponsesMetadata {
     pub(crate) extra: BTreeMap<String, String>,
 }
 
-impl CodexResponsesMetadata {
+impl RequestMetadata {
     pub(crate) fn new(
         installation_id: String,
         session_id: String,
@@ -206,7 +206,7 @@ impl CodexResponsesMetadata {
         }
         if let Some(subagent_header) = &self.subagent_header {
             client_metadata.insert(
-                X_OPENAI_SUBAGENT_HEADER.to_string(),
+                X_SUBAGENT_HEADER.to_string(),
                 subagent_header.clone(),
             );
         }
@@ -246,7 +246,7 @@ impl CodexResponsesMetadata {
             );
         }
         if let Some(subagent_header) = &self.subagent_header {
-            insert_header(&mut headers, X_OPENAI_SUBAGENT_HEADER, subagent_header);
+            insert_header(&mut headers, X_SUBAGENT_HEADER, subagent_header);
         }
         headers
     }
@@ -258,9 +258,9 @@ impl CodexResponsesMetadata {
             (Some(request_kind), compaction)
         });
         let has_turn_identity =
-            request_kind.is_none_or(CodexResponsesRequestKind::has_turn_identity);
+            request_kind.is_none_or(RequestKind::has_turn_identity);
         let has_request_identity =
-            request_kind.is_some_and(CodexResponsesRequestKind::has_turn_identity);
+            request_kind.is_some_and(RequestKind::has_turn_identity);
         CodexTurnMetadataPayload {
             installation_id: has_request_identity.then_some(self.installation_id.as_str()),
             session_id: has_turn_identity.then_some(self.session_id.as_str()),
