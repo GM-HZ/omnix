@@ -93,6 +93,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use crate::models_refresh_worker::ModelsRefreshWorker;
+use crate::chatgpt_stubs::{connectors, workspace_settings};
 
 const EXTERNAL_AUTH_REFRESH_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECTION_RPC_DRAIN_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 30);
