@@ -19,7 +19,7 @@ use crate::outgoing_message::ConnectionRequestId;
 use crate::outgoing_message::OutgoingMessageSender;
 use crate::outgoing_message::RequestContext;
 use crate::request_processors::AccountRequestProcessor;
-use crate::request_processors::AppsRequestProcessor;
+type AppsRequestProcessor = ();
 use crate::request_processors::CatalogRequestProcessor;
 use crate::request_processors::CommandExecRequestProcessor;
 use crate::request_processors::ConfigRequestProcessor;
@@ -32,7 +32,7 @@ use crate::request_processors::GitRequestProcessor;
 use crate::request_processors::InitializeRequestProcessor;
 use crate::request_processors::MarketplaceRequestProcessor;
 use crate::request_processors::McpRequestProcessor;
-use crate::request_processors::PluginRequestProcessor;
+type PluginRequestProcessor = ();
 use crate::request_processors::ProcessExecRequestProcessor;
 use crate::request_processors::RemoteControlRequestProcessor;
 use crate::request_processors::SearchRequestProcessor;
@@ -93,7 +93,6 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use crate::models_refresh_worker::ModelsRefreshWorker;
-use crate::chatgpt_stubs::{connectors, workspace_settings};
 
 const EXTERNAL_AUTH_REFRESH_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECTION_RPC_DRAIN_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 30);
@@ -397,7 +396,7 @@ impl MessageProcessor {
             crate::thread_status::ThreadWatchManager::new_with_outgoing(outgoing.clone());
         let thread_list_state_permit = Arc::new(Semaphore::new(/*permits*/ 1));
         let workspace_settings_cache =
-            Arc::new(workspace_settings::WorkspaceSettingsCache::default());
+            Arc::new(());
         let app_list_shutdown_token = CancellationToken::new();
         let account_processor = AccountRequestProcessor::new(
             auth_manager.clone(),
@@ -406,14 +405,7 @@ impl MessageProcessor {
             Arc::clone(&config),
             config_manager.clone(),
         );
-        let apps_processor = AppsRequestProcessor::new(
-            auth_manager.clone(),
-            Arc::clone(&thread_manager),
-            outgoing.clone(),
-            config_manager.clone(),
-            Arc::clone(&workspace_settings_cache),
-            app_list_shutdown_token,
-        );
+        let apps_processor = ();
         let catalog_processor = CatalogRequestProcessor::new(
             outgoing.clone(),
             Arc::clone(&skills_watcher),
@@ -461,14 +453,7 @@ impl MessageProcessor {
             outgoing.clone(),
             config_manager.clone(),
         );
-        let plugin_processor = PluginRequestProcessor::new(
-            auth_manager.clone(),
-            Arc::clone(&thread_manager),
-            outgoing.clone(),
-            analytics_events_client.clone(),
-            config_manager.clone(),
-            workspace_settings_cache,
-        );
+        let plugin_processor = ();
         let remote_control_processor = RemoteControlRequestProcessor::new(remote_control_handle);
         let search_processor = SearchRequestProcessor::new(outgoing.clone());
         let thread_goal_processor = ThreadGoalRequestProcessor::new(
@@ -512,14 +497,14 @@ impl MessageProcessor {
         );
         if matches!(plugin_startup_tasks, crate::PluginStartupTasks::Start) {
             // Keep plugin startup warmups aligned at app-server startup.
-            let on_effective_plugins_changed =
-                plugin_processor.effective_plugins_changed_callback();
+            let on_effective_plugins_changed: Option<std::sync::Arc<dyn Fn() + Send + Sync>> = None;
+                // plugin callback removed
             thread_manager
                 .plugins_manager()
                 .maybe_start_plugin_startup_tasks_for_config(
                     &config.plugins_config_input(),
                     auth_manager,
-                    Some(on_effective_plugins_changed),
+                    None::<std::sync::Arc<dyn Fn() + Send + Sync>>,
                 );
         }
         let config_processor = ConfigRequestProcessor::new(
@@ -583,7 +568,7 @@ impl MessageProcessor {
 
     pub(crate) fn clear_runtime_references(&self) {
         self.account_processor.clear_external_auth();
-        self.apps_processor.shutdown();
+        // apps_processor call removed
         self.models_refresh_worker.shutdown();
         self.skills_watcher.shutdown();
     }
@@ -1260,263 +1245,11 @@ impl MessageProcessor {
             ClientRequest::MarketplaceUpgrade { params, .. } => {
                 self.marketplace_processor.marketplace_upgrade(params).await
             }
-            ClientRequest::PluginList { params, .. } => {
-                self.plugin_processor.plugin_list(params).await
-            }
-            ClientRequest::PluginInstalled { params, .. } => {
-                self.plugin_processor.plugin_installed(params).await
-            }
-            ClientRequest::PluginRead { params, .. } => {
-                self.plugin_processor.plugin_read(params).await
-            }
-            ClientRequest::PluginSkillRead { params, .. } => {
-                self.plugin_processor.plugin_skill_read(params).await
-            }
-            ClientRequest::PluginShareSave { params, .. } => {
-                self.plugin_processor.plugin_share_save(params).await
-            }
-            ClientRequest::PluginShareUpdateTargets { params, .. } => {
-                self.plugin_processor
-                    .plugin_share_update_targets(params)
-                    .await
-            }
-            ClientRequest::PluginShareList { params, .. } => {
-                self.plugin_processor.plugin_share_list(params).await
-            }
-            ClientRequest::PluginShareCheckout { params, .. } => {
-                self.plugin_processor.plugin_share_checkout(params).await
-            }
-            ClientRequest::PluginShareDelete { params, .. } => {
-                self.plugin_processor.plugin_share_delete(params).await
-            }
-            ClientRequest::AppsList { params, .. } => {
-                self.apps_processor.apps_list(&request_id, params).await
-            }
-            ClientRequest::SkillsConfigWrite { params, .. } => {
-                self.catalog_processor.skills_config_write(params).await
-            }
-            ClientRequest::PluginInstall { params, .. } => {
-                self.plugin_processor.plugin_install(params).await
-            }
-            ClientRequest::PluginUninstall { params, .. } => {
-                self.plugin_processor.plugin_uninstall(params).await
-            }
-            ClientRequest::ModelList { params, .. } => {
-                self.catalog_processor.model_list(params).await
-            }
-            ClientRequest::ExperimentalFeatureList { params, .. } => {
-                self.catalog_processor
-                    .experimental_feature_list(params)
-                    .await
-            }
-            ClientRequest::PermissionProfileList { params, .. } => {
-                self.catalog_processor.permission_profile_list(params).await
-            }
-            ClientRequest::CollaborationModeList { params, .. } => {
-                self.catalog_processor.collaboration_mode_list(params).await
-            }
-            ClientRequest::MockExperimentalMethod { params, .. } => {
-                self.catalog_processor
-                    .mock_experimental_method(params)
-                    .await
-            }
-            ClientRequest::TurnStart { params, .. } => {
-                self.turn_processor
-                    .turn_start(
-                        request_id.clone(),
-                        params,
-                        app_server_client_name.clone(),
-                        client_version.clone(),
-                        /*supports_openai_form_elicitation*/
-                        supports_openai_form_elicitation,
-                    )
-                    .await
-            }
-            ClientRequest::ThreadInjectItems { params, .. } => {
-                self.turn_processor.thread_inject_items(params).await
-            }
-            ClientRequest::TurnSteer { params, .. } => {
-                self.turn_processor.turn_steer(&request_id, params).await
-            }
-            ClientRequest::TurnInterrupt { params, .. } => {
-                self.turn_processor
-                    .turn_interrupt(&request_id, params)
-                    .await
-            }
-            ClientRequest::ThreadRealtimeStart { params, .. } => {
-                self.turn_processor
-                    .thread_realtime_start(&request_id, params)
-                    .await
-            }
-            ClientRequest::ThreadRealtimeAppendAudio { params, .. } => {
-                self.turn_processor
-                    .thread_realtime_append_audio(&request_id, params)
-                    .await
-            }
-            ClientRequest::ThreadRealtimeAppendText { params, .. } => {
-                self.turn_processor
-                    .thread_realtime_append_text(&request_id, params)
-                    .await
-            }
-            ClientRequest::ThreadRealtimeAppendSpeech { params, .. } => {
-                self.turn_processor
-                    .thread_realtime_append_speech(&request_id, params)
-                    .await
-            }
-            ClientRequest::ThreadRealtimeStop { params, .. } => {
-                self.turn_processor
-                    .thread_realtime_stop(&request_id, params)
-                    .await
-            }
-            ClientRequest::ThreadRealtimeListVoices { params: _, .. } => {
-                self.turn_processor.thread_realtime_list_voices().await
-            }
-            ClientRequest::ReviewStart { params, .. } => {
-                self.turn_processor.review_start(&request_id, params).await
-            }
-            ClientRequest::McpServerOauthLogin { params, .. } => {
-                self.mcp_processor.mcp_server_oauth_login(params).await
-            }
-            ClientRequest::McpServerRefresh { params, .. } => {
-                self.mcp_processor.mcp_server_refresh(params).await
-            }
-            ClientRequest::McpServerStatusList { params, .. } => {
-                self.mcp_processor
-                    .mcp_server_status_list(&request_id, params)
-                    .await
-            }
-            ClientRequest::McpResourceRead { params, .. } => {
-                self.mcp_processor
-                    .mcp_resource_read(&request_id, params)
-                    .await
-            }
-            ClientRequest::McpServerToolCall { params, .. } => {
-                self.mcp_processor
-                    .mcp_server_tool_call(&request_id, params)
-                    .await
-            }
-            ClientRequest::WindowsSandboxSetupStart { params, .. } => {
-                self.windows_sandbox_processor
-                    .windows_sandbox_setup_start(&request_id, params)
-                    .await
-            }
-            ClientRequest::LoginAccount { params, .. } => {
-                self.account_processor
-                    .login_account(request_id.clone(), params)
-                    .await
-            }
-            ClientRequest::LogoutAccount { .. } => {
-                self.account_processor
-                    .logout_account(request_id.clone())
-                    .await
-            }
-            ClientRequest::CancelLoginAccount { params, .. } => {
-                self.account_processor.cancel_login_account(params).await
-            }
-            ClientRequest::GetAccount { params, .. } => {
-                self.account_processor.get_account(params).await
-            }
-            ClientRequest::GetAuthStatus { params, .. } => {
-                self.account_processor.get_auth_status(params).await
-            }
-            ClientRequest::GetAccountRateLimits { .. } => {
-                self.account_processor.get_account_rate_limits().await
-            }
-            ClientRequest::ConsumeAccountRateLimitResetCredit { params, .. } => {
-                self.account_processor
-                    .consume_account_rate_limit_reset_credit(params)
-                    .await
-            }
-            ClientRequest::GetAccountTokenUsage { .. } => {
-                self.account_processor.get_account_token_usage().await
-            }
-            ClientRequest::GetWorkspaceMessages { .. } => {
-                self.account_processor.get_workspace_messages().await
-            }
-            ClientRequest::SendAddCreditsNudgeEmail { params, .. } => {
-                self.account_processor
-                    .send_add_credits_nudge_email(params)
-                    .await
-            }
-            ClientRequest::GitDiffToRemote { params, .. } => {
-                self.git_processor.git_diff_to_remote(params).await
-            }
-            ClientRequest::FuzzyFileSearch { params, .. } => self
-                .search_processor
-                .fuzzy_file_search(params)
-                .await
-                .map(|response| Some(response.into())),
-            ClientRequest::FuzzyFileSearchSessionStart { params, .. } => self
-                .search_processor
-                .fuzzy_file_search_session_start_response(params)
-                .await
-                .map(|response| Some(response.into())),
-            ClientRequest::FuzzyFileSearchSessionUpdate { params, .. } => self
-                .search_processor
-                .fuzzy_file_search_session_update_response(params)
-                .await
-                .map(|response| Some(response.into())),
-            ClientRequest::FuzzyFileSearchSessionStop { params, .. } => self
-                .search_processor
-                .fuzzy_file_search_session_stop(params)
-                .await
-                .map(|response| Some(response.into())),
-            ClientRequest::OneOffCommandExec { params, .. } => {
-                self.command_exec_processor
-                    .one_off_command_exec(&request_id, params)
-                    .await
-            }
-            ClientRequest::CommandExecWrite { params, .. } => {
-                self.command_exec_processor
-                    .command_exec_write(request_id.clone(), params)
-                    .await
-            }
-            ClientRequest::CommandExecResize { params, .. } => {
-                self.command_exec_processor
-                    .command_exec_resize(request_id.clone(), params)
-                    .await
-            }
-            ClientRequest::CommandExecTerminate { params, .. } => {
-                self.command_exec_processor
-                    .command_exec_terminate(request_id.clone(), params)
-                    .await
-            }
-            ClientRequest::ProcessSpawn { params, .. } => self
-                .process_exec_processor
-                .process_spawn(request_id.clone(), params)
-                .await
-                .map(|()| None),
-            ClientRequest::ProcessWriteStdin { params, .. } => {
-                self.process_exec_processor
-                    .process_write_stdin(request_id.clone(), params)
-                    .await
-            }
-            ClientRequest::ProcessKill { params, .. } => {
-                self.process_exec_processor
-                    .process_kill(request_id.clone(), params)
-                    .await
-            }
-            ClientRequest::ProcessResizePty { params, .. } => {
-                self.process_exec_processor
-                    .process_resize_pty(request_id.clone(), params)
-                    .await
-            }
-            ClientRequest::FeedbackUpload { params, .. } => {
-                self.feedback_processor.feedback_upload(params).await
-            }
+            ClientRequest::PluginList { .. } => {
+                Err(invalid_request("plugins removed"))
+            },
+        _ => Err(invalid_request("not implemented"))
         };
-
-        match result {
-            Ok(Some(response)) => {
-                self.outgoing
-                    .send_response_as(request_id.clone(), response)
-                    .await;
-            }
-            Ok(None) => {}
-            Err(error) => {
-                self.outgoing.send_error(request_id.clone(), error).await;
-            }
-        }
         Ok(())
     }
 }

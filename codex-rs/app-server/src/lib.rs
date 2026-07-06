@@ -1,7 +1,6 @@
 #![recursion_limit = "256"]
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
-mod chatgpt_stubs;
 use codex_arg0::Arg0DispatchPaths;
 use codex_config::ConfigLayerStackOrdering;
 use codex_config::LoaderOverrides;

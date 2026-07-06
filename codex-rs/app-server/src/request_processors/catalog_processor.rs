@@ -1,7 +1,6 @@
 use super::*;
 use codex_core::config::permission_profile_catalog;
 use futures::StreamExt;
-use crate::chatgpt_stubs::{connectors, workspace_settings};
 
 #[derive(Clone)]
 pub(crate) struct CatalogRequestProcessor {
@@ -11,7 +10,7 @@ pub(crate) struct CatalogRequestProcessor {
     pub(super) thread_manager: Arc<ThreadManager>,
     pub(super) config: Arc<Config>,
     pub(super) config_manager: ConfigManager,
-    pub(super) workspace_settings_cache: Arc<workspace_settings::WorkspaceSettingsCache>,
+    pub(super) workspace_settings_cache: Arc<()>,
 }
 
 const SKILLS_LIST_CWD_CONCURRENCY: usize = 5;
@@ -105,7 +104,7 @@ impl CatalogRequestProcessor {
         thread_manager: Arc<ThreadManager>,
         config: Arc<Config>,
         config_manager: ConfigManager,
-        workspace_settings_cache: Arc<workspace_settings::WorkspaceSettingsCache>,
+        workspace_settings_cache: Arc<()>,
     ) -> Self {
         Self {
             outgoing,
@@ -229,21 +228,7 @@ impl CatalogRequestProcessor {
         config: &Config,
         auth: Option<&CodexAuth>,
     ) -> bool {
-        match workspace_settings::codex_plugins_enabled_for_workspace(
-            config,
-            auth,
-            Some(&self.workspace_settings_cache),
-        )
-        .await
-        {
-            Ok(enabled) => enabled,
-            Err(err) => {
-                warn!(
-                    "failed to fetch workspace Codex plugins setting; allowing Codex plugins: {err:#}"
-                );
-                true
-            }
-        }
+        true // workspace_settings removed — always allow plugins
     }
 
     async fn list_models(
