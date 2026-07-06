@@ -16,10 +16,10 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
-use core_test_support::TestCodexResponsesRequestKind;
+use core_test_support::TestRequestKind;
 use core_test_support::load_default_config_for_test;
 use core_test_support::responses;
-use core_test_support::responses_metadata as test_responses_metadata;
+use core_test_support::request_metadata as test_request_metadata;
 use core_test_support::test_codex::test_codex;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
@@ -35,13 +35,13 @@ fn normalize_git_remote_url(url: &str) -> String {
 }
 
 const TEST_INSTALLATION_ID: &str = "11111111-1111-4111-8111-111111111111";
-fn test_turn_responses_metadata(
+fn test_turn_request_metadata(
     _client: &ModelClient,
     thread_id: ThreadId,
     session_source: &SessionSource,
-) -> codex_core::CodexResponsesMetadata {
+) -> codex_core::RequestMetadata {
     let thread_id = thread_id.to_string();
-    test_responses_metadata(
+    test_request_metadata(
         TEST_INSTALLATION_ID,
         &thread_id,
         &thread_id,
@@ -49,7 +49,7 @@ fn test_turn_responses_metadata(
         format!("{thread_id}:0"),
         session_source,
         /*parent_thread_id*/ None,
-        TestCodexResponsesRequestKind::Turn,
+        TestRequestKind::Turn,
     )
 }
 
@@ -77,7 +77,6 @@ async fn responses_stream_includes_subagent_header_on_review() {
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: None,
-        aws: None,
         wire_api: WireApi::Responses,
         query_params: None,
         http_headers: None,
@@ -133,7 +132,7 @@ async fn responses_stream_includes_subagent_header_on_review() {
         /*item_ids_enabled*/ false,
         /*attestation_provider*/ None,
     );
-    let responses_metadata = test_turn_responses_metadata(&client, thread_id, &session_source);
+    let request_metadata = test_turn_request_metadata(&client, thread_id, &session_source);
     let mut client_session = client.new_session();
 
     let mut prompt = Prompt::default();
@@ -155,7 +154,7 @@ async fn responses_stream_includes_subagent_header_on_review() {
             effort,
             summary.unwrap_or(model_info.default_reasoning_summary),
             /*service_tier*/ None,
-            &responses_metadata,
+            &request_metadata,
             &codex_rollout_trace::InferenceTraceContext::disabled(),
         )
         .await
@@ -211,7 +210,6 @@ async fn responses_stream_includes_subagent_header_on_other() {
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: None,
-        aws: None,
         wire_api: WireApi::Responses,
         query_params: None,
         http_headers: None,
@@ -267,7 +265,7 @@ async fn responses_stream_includes_subagent_header_on_other() {
         /*item_ids_enabled*/ false,
         /*attestation_provider*/ None,
     );
-    let responses_metadata = test_turn_responses_metadata(&client, thread_id, &session_source);
+    let request_metadata = test_turn_request_metadata(&client, thread_id, &session_source);
     let mut client_session = client.new_session();
 
     let mut prompt = Prompt::default();
@@ -289,7 +287,7 @@ async fn responses_stream_includes_subagent_header_on_other() {
             effort,
             summary.unwrap_or(model_info.default_reasoning_summary),
             /*service_tier*/ None,
-            &responses_metadata,
+            &request_metadata,
             &codex_rollout_trace::InferenceTraceContext::disabled(),
         )
         .await
@@ -326,7 +324,6 @@ async fn responses_respects_model_info_overrides_from_config() {
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: None,
-        aws: None,
         wire_api: WireApi::Responses,
         query_params: None,
         http_headers: None,
@@ -387,7 +384,7 @@ async fn responses_respects_model_info_overrides_from_config() {
         /*item_ids_enabled*/ false,
         /*attestation_provider*/ None,
     );
-    let responses_metadata = test_turn_responses_metadata(&client, thread_id, &session_source);
+    let request_metadata = test_turn_request_metadata(&client, thread_id, &session_source);
     let mut client_session = client.new_session();
 
     let mut prompt = Prompt::default();
@@ -409,7 +406,7 @@ async fn responses_respects_model_info_overrides_from_config() {
             effort,
             summary.unwrap_or(model_info.default_reasoning_summary),
             /*service_tier*/ None,
-            &responses_metadata,
+            &request_metadata,
             &codex_rollout_trace::InferenceTraceContext::disabled(),
         )
         .await

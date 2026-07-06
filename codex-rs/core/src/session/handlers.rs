@@ -4,6 +4,7 @@ use crate::realtime_conversation::handle_close as handle_realtime_conversation_c
 use crate::realtime_conversation::handle_speech as handle_realtime_conversation_speech;
 use crate::realtime_conversation::handle_start as handle_realtime_conversation_start;
 use crate::realtime_conversation::handle_text as handle_realtime_conversation_text;
+
 use codex_otel::set_parent_from_w3c_trace_context;
 use codex_protocol::protocol::Submission;
 use tracing::Instrument;

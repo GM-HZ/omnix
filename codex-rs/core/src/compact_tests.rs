@@ -21,7 +21,6 @@ async fn process_compacted_history_with_test_session(
         .build_initial_context_with_world_state(&turn_context, world_state.as_ref())
         .await;
     let initial_context_injection = InitialContextInjection::BeforeLastUserMessage(world_state);
-    let (refreshed, _) = crate::compact_remote::process_compacted_history(
         &session,
         &turn_context,
         compacted_history,
@@ -265,7 +264,6 @@ fn should_use_remote_compact_task_for_azure_provider() {
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: None,
-        aws: None,
         wire_api: WireApi::Responses,
         query_params: None,
         http_headers: None,

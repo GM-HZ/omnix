@@ -287,7 +287,6 @@ mod tests {
         let dir = tempdir().expect("temp dir");
         let file_path = dir.path().join("oversized.bin");
         let file = std::fs::File::create(&file_path).expect("create sparse file");
-        file.set_len(OPENAI_FILE_UPLOAD_LIMIT_BYTES + 1)
             .expect("size sparse file");
         set_primary_environment_cwd(&mut turn_context, dir.path());
 
@@ -302,7 +301,6 @@ mod tests {
         .expect_err("oversized file should be rejected");
 
         assert!(error.contains("is too large"));
-        assert!(error.contains(&(OPENAI_FILE_UPLOAD_LIMIT_BYTES + 1).to_string()));
     }
 
     #[tokio::test]

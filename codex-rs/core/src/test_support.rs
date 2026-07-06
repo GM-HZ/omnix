@@ -167,7 +167,7 @@ pub enum TestRequestKind {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn responses_metadata(
+pub fn request_metadata(
     installation_id: &str,
     session_id: &str,
     thread_id: &str,

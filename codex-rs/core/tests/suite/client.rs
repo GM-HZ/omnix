@@ -51,7 +51,7 @@ use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::user_input::UserInput;
 use core_test_support::PathBufExt;
-use core_test_support::TestCodexResponsesRequestKind;
+use core_test_support::TestRequestKind;
 use core_test_support::apps_test_server::AppsTestServer;
 use core_test_support::load_default_config_for_test;
 use core_test_support::responses::ResponsesRequest;
@@ -68,7 +68,7 @@ use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::responses::sse_failed;
 use core_test_support::responses::strip_metadata_from_json;
-use core_test_support::responses_metadata as test_responses_metadata;
+use core_test_support::request_metadata as test_request_metadata;
 use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::local_selections;
@@ -98,12 +98,12 @@ const INSTALLATION_ID_FILENAME: &str = "installation_id";
 const TEST_WINDOW_ID: &str = "test-thread:0";
 const TEST_INSTALLATION_ID: &str = "11111111-1111-4111-8111-111111111111";
 
-fn test_turn_responses_metadata(
+fn test_turn_request_metadata(
     _client: &ModelClient,
     thread_id: ThreadId,
-) -> codex_core::CodexResponsesMetadata {
+) -> codex_core::RequestMetadata {
     let thread_id = thread_id.to_string();
-    test_responses_metadata(
+    test_request_metadata(
         TEST_INSTALLATION_ID,
         &thread_id,
         &thread_id,
@@ -111,7 +111,7 @@ fn test_turn_responses_metadata(
         TEST_WINDOW_ID.to_string(),
         &SessionSource::Exec,
         /*parent_thread_id*/ None,
-        TestCodexResponsesRequestKind::Turn,
+        TestRequestKind::Turn,
     )
 }
 
@@ -1283,7 +1283,6 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: Some(auth),
-        aws: None,
         wire_api: WireApi::Responses,
         query_params: None,
         http_headers: None,
@@ -1336,7 +1335,7 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
         /*item_ids_enabled*/ config.features.enabled(Feature::ItemIds),
         /*attestation_provider*/ None,
     );
-    let responses_metadata = test_turn_responses_metadata(&client, thread_id);
+    let request_metadata = test_turn_request_metadata(&client, thread_id);
     let mut client_session = client.new_session();
     let mut prompt = Prompt::default();
     prompt.input.push(ResponseItem::Message {
@@ -1357,7 +1356,7 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
             effort,
             summary.unwrap_or(ReasoningSummary::Auto),
             /*service_tier*/ None,
-            &responses_metadata,
+            &request_metadata,
             &codex_rollout_trace::InferenceTraceContext::disabled(),
         )
         .await
@@ -2896,7 +2895,6 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: None,
-        aws: None,
         wire_api: WireApi::Responses,
         query_params: None,
         http_headers: None,
@@ -2950,7 +2948,7 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
         /*item_ids_enabled*/ false,
         /*attestation_provider*/ None,
     );
-    let responses_metadata = test_turn_responses_metadata(&client, thread_id);
+    let request_metadata = test_turn_request_metadata(&client, thread_id);
     let mut client_session = client.new_session();
 
     let mut prompt = Prompt::default();
@@ -3035,7 +3033,7 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
             effort,
             summary.unwrap_or(ReasoningSummary::Auto),
             /*service_tier*/ None,
-            &responses_metadata,
+            &request_metadata,
             &codex_rollout_trace::InferenceTraceContext::disabled(),
         )
         .await
@@ -3510,7 +3508,6 @@ async fn azure_overrides_assign_properties_used_for_responses_url() {
         env_key: Some(EXISTING_ENV_VAR_WITH_NON_EMPTY_VALUE.to_string()),
         experimental_bearer_token: None,
         auth: None,
-        aws: None,
         query_params: Some(std::collections::HashMap::from([(
             "api-version".to_string(),
             "2025-04-01-preview".to_string(),
@@ -3604,7 +3601,6 @@ async fn env_var_overrides_loaded_auth() {
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: None,
-        aws: None,
         wire_api: WireApi::Responses,
         http_headers: Some(std::collections::HashMap::from([(
             "Custom-Header".to_string(),
