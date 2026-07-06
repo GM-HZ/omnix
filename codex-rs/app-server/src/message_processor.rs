@@ -1247,9 +1247,248 @@ impl MessageProcessor {
             }
             ClientRequest::PluginList { .. } => {
                 Err(invalid_request("plugins removed"))
-            },
-        _ => Err(invalid_request("not implemented"))
+            }
+            ClientRequest::PluginInstalled { .. } => {
+                Err(invalid_request("plugins removed"))
+            }
+            ClientRequest::PluginRead { .. } => {
+                Err(invalid_request("plugins removed"))
+            }
+            ClientRequest::PluginSkillRead { .. } => {
+                Err(invalid_request("plugins removed"))
+            }
+            ClientRequest::PluginShareSave { .. } => {
+                Err(invalid_request("plugins removed"))
+            }
+            ClientRequest::PluginShareUpdateTargets { .. } => {
+                Err(invalid_request("plugins removed"))
+            }
+            ClientRequest::PluginShareList { .. } => {
+                Err(invalid_request("plugins removed"))
+            }
+            ClientRequest::PluginShareCheckout { .. } => {
+                Err(invalid_request("plugins removed"))
+            }
+            ClientRequest::PluginShareDelete { .. } => {
+                Err(invalid_request("plugins removed"))
+            }
+            ClientRequest::AppsList { .. } => {
+                Err(invalid_request("apps removed"))
+            }
+            ClientRequest::SkillsConfigWrite { params, .. } => {
+                self.catalog_processor.skills_config_write(params).await
+            }
+            ClientRequest::PluginInstall { .. } => {
+                Err(invalid_request("plugins removed"))
+            }
+            ClientRequest::PluginUninstall { .. } => {
+                Err(invalid_request("plugins removed"))
+            }
+            ClientRequest::ModelList { params, .. } => {
+                self.catalog_processor.model_list(params).await
+            }
+            ClientRequest::ExperimentalFeatureList { params, .. } => {
+                self.catalog_processor
+                    .experimental_feature_list(params)
+                    .await
+            }
+            ClientRequest::PermissionProfileList { params, .. } => {
+                self.catalog_processor.permission_profile_list(params).await
+            }
+            ClientRequest::CollaborationModeList { params, .. } => {
+                self.catalog_processor.collaboration_mode_list(params).await
+            }
+            ClientRequest::MockExperimentalMethod { params, .. } => {
+                self.catalog_processor
+                    .mock_experimental_method(params)
+                    .await
+            }
+            ClientRequest::TurnStart { params, .. } => {
+                self.turn_processor
+                    .turn_start(
+                        request_id.clone(),
+                        params,
+                        app_server_client_name.clone(),
+                        client_version.clone(),
+                        supports_openai_form_elicitation,
+                    )
+                    .await
+            }
+            ClientRequest::ThreadInjectItems { params, .. } => {
+                self.turn_processor.thread_inject_items(params).await
+            }
+            ClientRequest::TurnSteer { params, .. } => {
+                self.turn_processor.turn_steer(&request_id, params).await
+            }
+            ClientRequest::TurnInterrupt { params, .. } => {
+                self.turn_processor
+                    .turn_interrupt(&request_id, params)
+                    .await
+            }
+            ClientRequest::ThreadRealtimeStart { .. } => {
+                Err(invalid_request("realtime removed"))
+            }
+            ClientRequest::ThreadRealtimeAppendAudio { .. } => {
+                Err(invalid_request("realtime removed"))
+            }
+            ClientRequest::ThreadRealtimeAppendText { .. } => {
+                Err(invalid_request("realtime removed"))
+            }
+            ClientRequest::ThreadRealtimeAppendSpeech { .. } => {
+                Err(invalid_request("realtime removed"))
+            }
+            ClientRequest::ThreadRealtimeStop { .. } => {
+                Err(invalid_request("realtime removed"))
+            }
+            ClientRequest::ThreadRealtimeListVoices { .. } => {
+                Err(invalid_request("realtime removed"))
+            }
+            ClientRequest::ReviewStart { params, .. } => {
+                self.turn_processor.review_start(&request_id, params).await
+            }
+            ClientRequest::McpServerOauthLogin { params, .. } => {
+                self.mcp_processor.mcp_server_oauth_login(params).await
+            }
+            ClientRequest::McpServerRefresh { params, .. } => {
+                self.mcp_processor.mcp_server_refresh(params).await
+            }
+            ClientRequest::McpServerStatusList { params, .. } => {
+                self.mcp_processor
+                    .mcp_server_status_list(&request_id, params)
+                    .await
+            }
+            ClientRequest::McpResourceRead { params, .. } => {
+                self.mcp_processor
+                    .mcp_resource_read(&request_id, params)
+                    .await
+            }
+            ClientRequest::McpServerToolCall { params, .. } => {
+                self.mcp_processor
+                    .mcp_server_tool_call(&request_id, params)
+                    .await
+            }
+            ClientRequest::WindowsSandboxSetupStart { params, .. } => {
+                self.windows_sandbox_processor
+                    .windows_sandbox_setup_start(&request_id, params)
+                    .await
+            }
+            ClientRequest::LoginAccount { params, .. } => {
+                self.account_processor
+                    .login_account(request_id.clone(), params)
+                    .await
+            }
+            ClientRequest::LogoutAccount { .. } => {
+                self.account_processor
+                    .logout_account(request_id.clone())
+                    .await
+            }
+            ClientRequest::CancelLoginAccount { params, .. } => {
+                self.account_processor.cancel_login_account(params).await
+            }
+            ClientRequest::GetAccount { params, .. } => {
+                self.account_processor.get_account(params).await
+            }
+            ClientRequest::GetAuthStatus { params, .. } => {
+                self.account_processor.get_auth_status(params).await
+            }
+            ClientRequest::GetAccountRateLimits { .. } => {
+                self.account_processor.get_account_rate_limits().await
+            }
+            ClientRequest::ConsumeAccountRateLimitResetCredit { params, .. } => {
+                self.account_processor
+                    .consume_account_rate_limit_reset_credit(params)
+                    .await
+            }
+            ClientRequest::GetAccountTokenUsage { .. } => {
+                self.account_processor.get_account_token_usage().await
+            }
+            ClientRequest::GetWorkspaceMessages { .. } => {
+                self.account_processor.get_workspace_messages().await
+            }
+            ClientRequest::SendAddCreditsNudgeEmail { params, .. } => {
+                self.account_processor
+                    .send_add_credits_nudge_email(params)
+                    .await
+            }
+            ClientRequest::GitDiffToRemote { params, .. } => {
+                self.git_processor.git_diff_to_remote(params).await
+            }
+            ClientRequest::FuzzyFileSearch { params, .. } => self
+                .search_processor
+                .fuzzy_file_search(params)
+                .await
+                .map(|response| Some(response.into())),
+            ClientRequest::FuzzyFileSearchSessionStart { params, .. } => self
+                .search_processor
+                .fuzzy_file_search_session_start_response(params)
+                .await
+                .map(|response| Some(response.into())),
+            ClientRequest::FuzzyFileSearchSessionUpdate { params, .. } => self
+                .search_processor
+                .fuzzy_file_search_session_update_response(params)
+                .await
+                .map(|response| Some(response.into())),
+            ClientRequest::FuzzyFileSearchSessionStop { params, .. } => self
+                .search_processor
+                .fuzzy_file_search_session_stop(params)
+                .await
+                .map(|response| Some(response.into())),
+            ClientRequest::OneOffCommandExec { params, .. } => {
+                self.command_exec_processor
+                    .one_off_command_exec(&request_id, params)
+                    .await
+            }
+            ClientRequest::CommandExecWrite { params, .. } => {
+                self.command_exec_processor
+                    .command_exec_write(request_id.clone(), params)
+                    .await
+            }
+            ClientRequest::CommandExecResize { params, .. } => {
+                self.command_exec_processor
+                    .command_exec_resize(request_id.clone(), params)
+                    .await
+            }
+            ClientRequest::CommandExecTerminate { params, .. } => {
+                self.command_exec_processor
+                    .command_exec_terminate(request_id.clone(), params)
+                    .await
+            }
+            ClientRequest::ProcessSpawn { params, .. } => self
+                .process_exec_processor
+                .process_spawn(request_id.clone(), params)
+                .await
+                .map(|()| None),
+            ClientRequest::ProcessWriteStdin { params, .. } => {
+                self.process_exec_processor
+                    .process_write_stdin(request_id.clone(), params)
+                    .await
+            }
+            ClientRequest::ProcessKill { params, .. } => {
+                self.process_exec_processor
+                    .process_kill(request_id.clone(), params)
+                    .await
+            }
+            ClientRequest::ProcessResizePty { params, .. } => {
+                self.process_exec_processor
+                    .process_resize_pty(request_id.clone(), params)
+                    .await
+            }
+            ClientRequest::FeedbackUpload { params, .. } => {
+                self.feedback_processor.feedback_upload(params).await
+            }
         };
+
+        match result {
+            Ok(Some(response)) => {
+                self.outgoing
+                    .send_response_as(request_id.clone(), response)
+                    .await;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                self.outgoing.send_error(request_id.clone(), error).await;
+            }
+        }
         Ok(())
     }
 }

@@ -2505,7 +2505,10 @@ fn create_tools_json_for_chat_completions(
                     "function": {
                         "name": freeform.name,
                         "description": freeform.description,
-                        "parameters": {},
+                        "parameters": {
+                            "type": "object",
+                            "properties": {}
+                        },
                     }
                 });
                 result.push(func_obj);
