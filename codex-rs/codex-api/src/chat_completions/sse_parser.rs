@@ -126,7 +126,6 @@ async fn process_chat_completions_sse(
             if !item_added_emitted
                 && (delta.content.is_some() || delta.reasoning_content.is_some())
             {
-                use codex_protocol::models::ResponseItem;
                 let placeholder = ResponseItem::Message {
                     id: Some(chunk.id.clone()),
                     role: "assistant".to_string(),
@@ -205,21 +204,20 @@ async fn process_chat_completions_sse(
     }
 
     // Emit final usage
-    if let Some(ref u) = usage {
-        let _ = tx
-            .send(Ok(ResponseEvent::Completed {
-                response_id: response_id.clone(),
-                token_usage: Some(TokenUsage {
-                    input_tokens: u.prompt_tokens as i64,
-                    cached_input_tokens: 0,
-                    output_tokens: u.completion_tokens as i64,
-                    reasoning_output_tokens: 0,
-                    total_tokens: u.total_tokens as i64,
-                }),
-                end_turn: Some(true),
-            }))
-            .await;
-    }
+    let token_usage = usage.as_ref().map(|u| TokenUsage {
+        input_tokens: u.prompt_tokens as i64,
+        cached_input_tokens: 0,
+        output_tokens: u.completion_tokens as i64,
+        reasoning_output_tokens: 0,
+        total_tokens: u.total_tokens as i64,
+    });
+    let _ = tx
+        .send(Ok(ResponseEvent::Completed {
+            response_id: response_id.clone(),
+            token_usage,
+            end_turn: Some(true),
+        }))
+        .await;
 }
 
 fn accumulate_tool_call(slots: &mut Vec<ToolCallSlot>, tc: &ChunkDeltaToolCall) {
