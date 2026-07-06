@@ -1,4 +1,3 @@
-mod chatgpt_stubs;
 #![recursion_limit = "256"]
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
