@@ -1,7 +1,5 @@
 use super::*;
 use crate::app_info::app_info_to_api;
-use crate::chatgpt_stubs::workspace_settings;
-use crate::chatgpt_stubs::connectors;
 
 pub(crate) struct AppsRequestProcessor {
     auth_manager: Arc<AuthManager>,
