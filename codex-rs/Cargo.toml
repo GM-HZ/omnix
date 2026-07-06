@@ -120,6 +120,7 @@ members = [
     "model-provider",
 ]
 resolver = "2"
+default-members = ["cli"]
 
 [workspace.package]
 version = "0.0.0"

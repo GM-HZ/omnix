@@ -33,8 +33,15 @@ pub const DOCTOR_REPORT_ATTACHMENT_FILENAME: &str = "codex-doctor-report.json";
 /// Filename used for the Windows sandbox log feedback attachment.
 pub const WINDOWS_SANDBOX_LOG_ATTACHMENT_FILENAME: &str = "windows-sandbox.log";
 const DEFAULT_MAX_BYTES: usize = 4 * 1024 * 1024; // 4 MiB
-const SENTRY_DSN: &str =
+const DEFAULT_SENTRY_DSN: &str =
     "https://ae32ed50620d7a7792c1ce5df38b3e3e@o33249.ingest.us.sentry.io/4510195390611458";
+
+fn sentry_dsn() -> Option<String> {
+    std::env::var("CODEX_FEEDBACK_SENTRY_DSN")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .or_else(|| std::env::var("OMNIX_FEEDBACK_SENTRY_DSN").ok().filter(|v| !v.is_empty()))
+}
 const UPLOAD_TIMEOUT_SECS: u64 = 10;
 const FEEDBACK_TAGS_TARGET: &str = "feedback_tags";
 const MAX_FEEDBACK_TAGS: usize = 64;
@@ -431,7 +438,9 @@ impl FeedbackSnapshot {
 
         // Build Sentry client
         let client = Client::from_config(ClientOptions {
-            dsn: Some(Dsn::from_str(SENTRY_DSN).map_err(|e| anyhow!("invalid DSN: {e}"))?),
+            dsn: Some(Dsn::from_str(
+                &sentry_dsn().unwrap_or_else(|| DEFAULT_SENTRY_DSN.to_string())
+            ).map_err(|e| anyhow!("invalid DSN: {e}"))?),
             transport: Some(Arc::new(DefaultTransportFactory {})),
             ..Default::default()
         });
