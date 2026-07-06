@@ -6,8 +6,8 @@ use crate::common::ResponseStream;
 use crate::error::ApiError;
 use codex_client::ByteStream;
 use codex_client::StreamResponse;
-use codex_protocol::OmnixMessage;
-use codex_protocol::OmnixToolCall;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::TokenUsage;
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
@@ -247,37 +247,42 @@ async fn flush_tool_calls(
     thinking: &str,
     tx: &mpsc::Sender<Result<ResponseEvent, ApiError>>,
 ) {
-    // If there was text content before tool calls, emit a message with it first
     let has_content = !content.is_empty();
     let has_thinking = !thinking.is_empty();
 
-    let mut omnix_tool_calls: Vec<OmnixToolCall> = Vec::new();
+    let mut tool_items: Vec<ResponseItem> = Vec::new();
     for slot in tool_slots.drain(..) {
         if slot.id.is_empty() {
             continue;
         }
-        omnix_tool_calls.push(OmnixToolCall::new(
-            slot.id,
-            slot.name,
-            slot.arguments,
-        ));
+        tool_items.push(ResponseItem::FunctionCall {
+            call_id: slot.id,
+            name: slot.name,
+            arguments: slot.arguments,
+            id: None,
+            namespace: None,
+            internal_chat_message_metadata_passthrough: None,
+        });
     }
 
     if has_content || has_thinking {
-        let msg = if has_content {
-            OmnixMessage::assistant_with_thinking(
-                Some(content.to_string()),
-                thinking.to_string(),
-            )
+        let display_text = if has_content {
+            content.to_string()
         } else {
-            OmnixMessage::assistant_with_thinking(None, thinking.to_string())
+            thinking.to_string()
         };
-        let _ = tx.send(Ok(ResponseEvent::ChatOutputItemDone(msg))).await;
+        let msg_item = ResponseItem::Message {
+            id: None,
+            role: "assistant".to_string(),
+            content: vec![ContentItem::OutputText { text: display_text }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        };
+        let _ = tx.send(Ok(ResponseEvent::OutputItemDone(msg_item))).await;
     }
 
-    if !omnix_tool_calls.is_empty() {
-        let msg = OmnixMessage::assistant_tool_calls(omnix_tool_calls);
-        let _ = tx.send(Ok(ResponseEvent::ChatOutputItemDone(msg))).await;
+    for tool_item in tool_items {
+        let _ = tx.send(Ok(ResponseEvent::OutputItemDone(tool_item))).await;
     }
 }
 
@@ -292,14 +297,20 @@ async fn flush_text_response(
         return;
     }
 
-    let msg = if !content.is_empty() {
-        OmnixMessage::assistant_with_thinking(
-            Some(content.to_string()),
-            thinking.to_string(),
-        )
+    // Build content items for ResponseItem::Message
+    let display_text = if !content.is_empty() {
+        content.to_string()
     } else {
-        OmnixMessage::assistant_with_thinking(None, thinking.to_string())
+        thinking.to_string()
     };
 
-    let _ = tx.send(Ok(ResponseEvent::ChatOutputItemDone(msg))).await;
+    let response_item = ResponseItem::Message {
+        id: Some(_response_id.to_string()),
+        role: "assistant".to_string(),
+        content: vec![ContentItem::OutputText { text: display_text }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+
+    let _ = tx.send(Ok(ResponseEvent::OutputItemDone(response_item))).await;
 }
