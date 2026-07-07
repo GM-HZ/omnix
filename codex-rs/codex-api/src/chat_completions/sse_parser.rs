@@ -184,6 +184,8 @@ async fn process_chat_completions_sse(
                             &tx,
                         )
                         .await;
+                        content_acc.clear();
+                        thinking_acc.clear();
                     }
                     _ => {}
                 }
