@@ -40,7 +40,11 @@ fn sentry_dsn() -> Option<String> {
     std::env::var("CODEX_FEEDBACK_SENTRY_DSN")
         .ok()
         .filter(|v| !v.is_empty())
-        .or_else(|| std::env::var("OMNIX_FEEDBACK_SENTRY_DSN").ok().filter(|v| !v.is_empty()))
+        .or_else(|| {
+            std::env::var("OMNIX_FEEDBACK_SENTRY_DSN")
+                .ok()
+                .filter(|v| !v.is_empty())
+        })
 }
 const UPLOAD_TIMEOUT_SECS: u64 = 10;
 const FEEDBACK_TAGS_TARGET: &str = "feedback_tags";
@@ -438,9 +442,10 @@ impl FeedbackSnapshot {
 
         // Build Sentry client
         let client = Client::from_config(ClientOptions {
-            dsn: Some(Dsn::from_str(
-                &sentry_dsn().unwrap_or_else(|| DEFAULT_SENTRY_DSN.to_string())
-            ).map_err(|e| anyhow!("invalid DSN: {e}"))?),
+            dsn: Some(
+                Dsn::from_str(&sentry_dsn().unwrap_or_else(|| DEFAULT_SENTRY_DSN.to_string()))
+                    .map_err(|e| anyhow!("invalid DSN: {e}"))?,
+            ),
             transport: Some(Arc::new(DefaultTransportFactory {})),
             ..Default::default()
         });

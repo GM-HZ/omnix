@@ -170,7 +170,7 @@ enum Subcommand {
 
     /// Apply the latest diff produced by Codex agent as a `git apply` to your local working tree.
     #[clap(visible_alias = "a")]
-    
+
     /// Resume a previous interactive session (picker by default; use --last to continue the most recent).
     Resume(ResumeCommand),
 
@@ -1524,7 +1524,7 @@ async fn cli_main(
                 run_execpolicycheck(cmd)?
             }
         },
-                        Some(Subcommand::StdioToUds(cmd)) => {
+        Some(Subcommand::StdioToUds(cmd)) => {
             reject_remote_mode_for_subcommand(
                 root_remote.as_deref(),
                 root_remote_auth_token_env.as_deref(),

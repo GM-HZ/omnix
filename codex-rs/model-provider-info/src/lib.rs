@@ -454,15 +454,24 @@ pub fn built_in_model_providers(
     ];
 
     // Auto-register cloud providers when their API key is present
-    if std::env::var("DEEPSEEK_API_KEY").ok().is_some_and(|v| !v.is_empty()) {
+    if std::env::var("DEEPSEEK_API_KEY")
+        .ok()
+        .is_some_and(|v| !v.is_empty())
+    {
         providers.push((DEEPSEEK_PROVIDER_ID, P::create_deepseek_provider()));
     }
 
-    if std::env::var("DASHSCOPE_API_KEY").ok().is_some_and(|v| !v.is_empty()) {
+    if std::env::var("DASHSCOPE_API_KEY")
+        .ok()
+        .is_some_and(|v| !v.is_empty())
+    {
         providers.push((QWEN_PROVIDER_ID, P::create_qwen_provider()));
     }
 
-    if std::env::var("IEDALAB_API_KEY").ok().is_some_and(|v| !v.is_empty()) {
+    if std::env::var("IEDALAB_API_KEY")
+        .ok()
+        .is_some_and(|v| !v.is_empty())
+    {
         providers.push((IDEALAB_PROVIDER_ID, P::create_idealab_provider()));
     }
 

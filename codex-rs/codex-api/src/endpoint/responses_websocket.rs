@@ -43,7 +43,10 @@ pub struct ResponsesWebsocketProbe {
 
 impl ResponsesWebsocketClient {
     pub fn new(provider: Provider, auth: SharedAuthProvider) -> Self {
-        Self { _provider: provider, _auth: auth }
+        Self {
+            _provider: provider,
+            _auth: auth,
+        }
     }
 
     #[tracing::instrument(

@@ -402,10 +402,7 @@ mod tests {
         let codex_home = tempfile::tempdir().expect("tempdir");
         let keyring = Arc::new(MockKeyringStore::default());
         let account = compute_keyring_account(codex_home.path());
-        keyring.set_error(
-            &account,
-            std::io::Error::other("error"),
-        );
+        keyring.set_error(&account, std::io::Error::other("error"));
 
         let backend = LocalSecretsBackend::new(codex_home.path().to_path_buf(), keyring);
         let scope = SecretScope::Global;

@@ -77,9 +77,7 @@ async fn process_chat_completions_sse(
             }
             Ok(Some(Err(e))) => {
                 let _ = tx
-                    .send(Err(ApiError::Stream(format!(
-                        "SSE stream error: {e}"
-                    ))))
+                    .send(Err(ApiError::Stream(format!("SSE stream error: {e}"))))
                     .await;
                 return;
             }
@@ -123,8 +121,7 @@ async fn process_chat_completions_sse(
 
             // Ensure OutputItemAdded is emitted before any delta event so the
             // turn loop has an "active item" to attach deltas to.
-            if !item_added_emitted
-                && (delta.content.is_some() || delta.reasoning_content.is_some())
+            if !item_added_emitted && (delta.content.is_some() || delta.reasoning_content.is_some())
             {
                 let placeholder = ResponseItem::Message {
                     id: Some(chunk.id.clone()),
@@ -133,14 +130,18 @@ async fn process_chat_completions_sse(
                     phase: None,
                     internal_chat_message_metadata_passthrough: None,
                 };
-                let _ = tx.send(Ok(ResponseEvent::OutputItemAdded(placeholder))).await;
+                let _ = tx
+                    .send(Ok(ResponseEvent::OutputItemAdded(placeholder)))
+                    .await;
                 item_added_emitted = true;
             }
 
             // Content text delta
             if let Some(ref text) = delta.content {
                 content_acc.push_str(text);
-                let _ = tx.send(Ok(ResponseEvent::OutputTextDelta(text.clone()))).await;
+                let _ = tx
+                    .send(Ok(ResponseEvent::OutputTextDelta(text.clone())))
+                    .await;
             }
 
             // Reasoning/thinking delta (DeepSeek-R1 style)
@@ -165,25 +166,13 @@ async fn process_chat_completions_sse(
             if let Some(ref reason) = choice.finish_reason {
                 match reason.as_str() {
                     "tool_calls" => {
-                        flush_tool_calls(
-                            &mut tool_slots,
-                            &content_acc,
-                            &thinking_acc,
-                            &tx,
-                        )
-                        .await;
+                        flush_tool_calls(&mut tool_slots, &content_acc, &thinking_acc, &tx).await;
                         content_acc.clear();
                         thinking_acc.clear();
                     }
                     "stop" | "length" => {
-                        flush_text_response(
-                            &response_id,
-                            &content_acc,
-                            &thinking_acc,
-                            &usage,
-                            &tx,
-                        )
-                        .await;
+                        flush_text_response(&response_id, &content_acc, &thinking_acc, &usage, &tx)
+                            .await;
                         content_acc.clear();
                         thinking_acc.clear();
                     }
@@ -195,14 +184,7 @@ async fn process_chat_completions_sse(
 
     // End of stream — flush any remaining content
     if !content_acc.is_empty() || !thinking_acc.is_empty() {
-        flush_text_response(
-            &response_id,
-            &content_acc,
-            &thinking_acc,
-            &usage,
-            &tx,
-        )
-        .await;
+        flush_text_response(&response_id, &content_acc, &thinking_acc, &usage, &tx).await;
     }
 
     // Emit final usage
@@ -324,5 +306,7 @@ async fn flush_text_response(
         internal_chat_message_metadata_passthrough: None,
     };
 
-    let _ = tx.send(Ok(ResponseEvent::OutputItemDone(response_item))).await;
+    let _ = tx
+        .send(Ok(ResponseEvent::OutputItemDone(response_item)))
+        .await;
 }

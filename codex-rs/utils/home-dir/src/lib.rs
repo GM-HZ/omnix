@@ -28,7 +28,10 @@ pub fn find_codex_home() -> std::io::Result<AbsolutePathBuf> {
 
     // 2. No env var — probe `.omnix` then `.codex`, default to `.omnix`
     let home = home_dir().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::NotFound, "Could not find home directory")
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "Could not find home directory",
+        )
     })?;
 
     for dir in [APP_DIR, LEGACY_APP_DIR] {
@@ -108,7 +111,10 @@ mod tests {
 
         let resolved = resolve_env_home(temp_str).expect("valid dir");
         let expected = temp_home.path().canonicalize().expect("canonicalize");
-        assert_eq!(resolved, AbsolutePathBuf::from_absolute_path(expected).expect("absolute"));
+        assert_eq!(
+            resolved,
+            AbsolutePathBuf::from_absolute_path(expected).expect("absolute")
+        );
     }
 
     #[test]
@@ -118,7 +124,10 @@ mod tests {
         // On a system where ~/.omnix exists, it should be .omnix.
         // If ~/.codex exists but ~/.omnix doesn't, .codex is the fallback.
         // If neither exists, default is .omnix.
-        let file_name = path.file_name().and_then(|n| n.to_str()).expect("file name");
+        let file_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("file name");
         assert!(
             file_name == APP_DIR || file_name == LEGACY_APP_DIR,
             "expected .omnix or .codex, got {file_name:?}"

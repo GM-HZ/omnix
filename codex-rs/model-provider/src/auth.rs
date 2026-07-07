@@ -574,6 +574,9 @@ pub struct AgentIdentityKey<'a> {
     pub agent_runtime_id: &'a str,
     pub private_key_pkcs8_base64: &'a str,
 }
-pub fn authorization_header_for_agent_task(_key: AgentIdentityKey<'_>, _task_id: String) -> Result<String, std::io::Error> {
+pub fn authorization_header_for_agent_task(
+    _key: AgentIdentityKey<'_>,
+    _task_id: String,
+) -> Result<String, std::io::Error> {
     Err(std::io::Error::other("agent identity removed"))
 }

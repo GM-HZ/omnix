@@ -395,8 +395,7 @@ impl MessageProcessor {
         let thread_watch_manager =
             crate::thread_status::ThreadWatchManager::new_with_outgoing(outgoing.clone());
         let thread_list_state_permit = Arc::new(Semaphore::new(/*permits*/ 1));
-        let workspace_settings_cache =
-            Arc::new(());
+        let workspace_settings_cache = Arc::new(());
         let app_list_shutdown_token = CancellationToken::new();
         let account_processor = AccountRequestProcessor::new(
             auth_manager.clone(),
@@ -498,7 +497,7 @@ impl MessageProcessor {
         if matches!(plugin_startup_tasks, crate::PluginStartupTasks::Start) {
             // Keep plugin startup warmups aligned at app-server startup.
             let on_effective_plugins_changed: Option<std::sync::Arc<dyn Fn() + Send + Sync>> = None;
-                // plugin callback removed
+            // plugin callback removed
             thread_manager
                 .plugins_manager()
                 .maybe_start_plugin_startup_tasks_for_config(
@@ -1245,45 +1244,23 @@ impl MessageProcessor {
             ClientRequest::MarketplaceUpgrade { params, .. } => {
                 self.marketplace_processor.marketplace_upgrade(params).await
             }
-            ClientRequest::PluginList { .. } => {
-                Err(invalid_request("plugins removed"))
-            }
-            ClientRequest::PluginInstalled { .. } => {
-                Err(invalid_request("plugins removed"))
-            }
-            ClientRequest::PluginRead { .. } => {
-                Err(invalid_request("plugins removed"))
-            }
-            ClientRequest::PluginSkillRead { .. } => {
-                Err(invalid_request("plugins removed"))
-            }
-            ClientRequest::PluginShareSave { .. } => {
-                Err(invalid_request("plugins removed"))
-            }
+            ClientRequest::PluginList { .. } => Err(invalid_request("plugins removed")),
+            ClientRequest::PluginInstalled { .. } => Err(invalid_request("plugins removed")),
+            ClientRequest::PluginRead { .. } => Err(invalid_request("plugins removed")),
+            ClientRequest::PluginSkillRead { .. } => Err(invalid_request("plugins removed")),
+            ClientRequest::PluginShareSave { .. } => Err(invalid_request("plugins removed")),
             ClientRequest::PluginShareUpdateTargets { .. } => {
                 Err(invalid_request("plugins removed"))
             }
-            ClientRequest::PluginShareList { .. } => {
-                Err(invalid_request("plugins removed"))
-            }
-            ClientRequest::PluginShareCheckout { .. } => {
-                Err(invalid_request("plugins removed"))
-            }
-            ClientRequest::PluginShareDelete { .. } => {
-                Err(invalid_request("plugins removed"))
-            }
-            ClientRequest::AppsList { .. } => {
-                Err(invalid_request("apps removed"))
-            }
+            ClientRequest::PluginShareList { .. } => Err(invalid_request("plugins removed")),
+            ClientRequest::PluginShareCheckout { .. } => Err(invalid_request("plugins removed")),
+            ClientRequest::PluginShareDelete { .. } => Err(invalid_request("plugins removed")),
+            ClientRequest::AppsList { .. } => Err(invalid_request("apps removed")),
             ClientRequest::SkillsConfigWrite { params, .. } => {
                 self.catalog_processor.skills_config_write(params).await
             }
-            ClientRequest::PluginInstall { .. } => {
-                Err(invalid_request("plugins removed"))
-            }
-            ClientRequest::PluginUninstall { .. } => {
-                Err(invalid_request("plugins removed"))
-            }
+            ClientRequest::PluginInstall { .. } => Err(invalid_request("plugins removed")),
+            ClientRequest::PluginUninstall { .. } => Err(invalid_request("plugins removed")),
             ClientRequest::ModelList { params, .. } => {
                 self.catalog_processor.model_list(params).await
             }
@@ -1325,9 +1302,7 @@ impl MessageProcessor {
                     .turn_interrupt(&request_id, params)
                     .await
             }
-            ClientRequest::ThreadRealtimeStart { .. } => {
-                Err(invalid_request("realtime removed"))
-            }
+            ClientRequest::ThreadRealtimeStart { .. } => Err(invalid_request("realtime removed")),
             ClientRequest::ThreadRealtimeAppendAudio { .. } => {
                 Err(invalid_request("realtime removed"))
             }
@@ -1337,9 +1312,7 @@ impl MessageProcessor {
             ClientRequest::ThreadRealtimeAppendSpeech { .. } => {
                 Err(invalid_request("realtime removed"))
             }
-            ClientRequest::ThreadRealtimeStop { .. } => {
-                Err(invalid_request("realtime removed"))
-            }
+            ClientRequest::ThreadRealtimeStop { .. } => Err(invalid_request("realtime removed")),
             ClientRequest::ThreadRealtimeListVoices { .. } => {
                 Err(invalid_request("realtime removed"))
             }

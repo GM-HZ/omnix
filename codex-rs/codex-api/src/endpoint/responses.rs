@@ -47,7 +47,10 @@ impl<T: HttpTransport> ResponsesClient<T> {
         _request: Option<Arc<dyn RequestTelemetry>>,
         _sse: Option<Arc<dyn crate::telemetry::SseTelemetry>>,
     ) -> Self {
-        Self { _sse_telemetry: _sse, ..self }
+        Self {
+            _sse_telemetry: _sse,
+            ..self
+        }
     }
 
     pub async fn stream_request(
@@ -55,7 +58,9 @@ impl<T: HttpTransport> ResponsesClient<T> {
         _request: ResponsesApiRequest,
         _options: ResponsesOptions,
     ) -> Result<ResponseStream, ApiError> {
-        Err(ApiError::Stream("Responses API removed per slim-agent-loop design".into()))
+        Err(ApiError::Stream(
+            "Responses API removed per slim-agent-loop design".into(),
+        ))
     }
 
     pub async fn stream(
@@ -65,7 +70,9 @@ impl<T: HttpTransport> ResponsesClient<T> {
         _compression: Compression,
         _turn_state: Option<Arc<OnceLock<String>>>,
     ) -> Result<ResponseStream, ApiError> {
-        Err(ApiError::Stream("Responses API removed per slim-agent-loop design".into()))
+        Err(ApiError::Stream(
+            "Responses API removed per slim-agent-loop design".into(),
+        ))
     }
 
     async fn stream_encoded(
@@ -75,6 +82,8 @@ impl<T: HttpTransport> ResponsesClient<T> {
         _compression: Compression,
         _turn_state: Option<Arc<OnceLock<String>>>,
     ) -> Result<ResponseStream, ApiError> {
-        Err(ApiError::Stream("Responses API removed per slim-agent-loop design".into()))
+        Err(ApiError::Stream(
+            "Responses API removed per slim-agent-loop design".into(),
+        ))
     }
 }

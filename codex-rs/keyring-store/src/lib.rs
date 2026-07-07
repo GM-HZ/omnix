@@ -51,7 +51,12 @@ impl KeyringStore for DefaultKeyringStore {
         Ok(None)
     }
 
-    fn save(&self, _service: &str, _account: &str, _value: &str) -> Result<(), CredentialStoreError> {
+    fn save(
+        &self,
+        _service: &str,
+        _account: &str,
+        _value: &str,
+    ) -> Result<(), CredentialStoreError> {
         Err(CredentialStoreError::new(std::io::Error::other(
             "OS keyring disabled per slim-agent-loop design",
         )))
@@ -94,12 +99,21 @@ pub mod tests {
     }
 
     impl KeyringStore for MockKeyringStore {
-        fn load(&self, _service: &str, account: &str) -> Result<Option<String>, CredentialStoreError> {
+        fn load(
+            &self,
+            _service: &str,
+            account: &str,
+        ) -> Result<Option<String>, CredentialStoreError> {
             let guard = self.credentials.lock().unwrap_or_else(|e| e.into_inner());
             Ok(guard.get(account).cloned())
         }
 
-        fn save(&self, _service: &str, account: &str, value: &str) -> Result<(), CredentialStoreError> {
+        fn save(
+            &self,
+            _service: &str,
+            account: &str,
+            value: &str,
+        ) -> Result<(), CredentialStoreError> {
             let mut guard = self.credentials.lock().unwrap_or_else(|e| e.into_inner());
             guard.insert(account.to_string(), value.to_string());
             Ok(())
