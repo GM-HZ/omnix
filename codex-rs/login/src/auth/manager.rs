@@ -21,7 +21,7 @@ use tokio::sync::Semaphore;
 use tokio::sync::watch;
 use tracing::instrument;
 
-use codex_agent_identity::ChatGptEnvironment;
+use super::agent_identity::ChatGptEnvironment;
 use codex_protocol::auth::AuthMode;
 use codex_protocol::config_types::ForcedLoginMethod;
 use codex_protocol::config_types::ModelProviderAuthInfo;
@@ -982,7 +982,7 @@ fn ensure_personal_access_token_workspace_allowed(
     expected_workspace_ids: Option<&[String]>,
     auth: &PersonalAccessTokenAuth,
 ) -> std::io::Result<()> {
-    crate::server::ensure_workspace_account_allowed(expected_workspace_ids, auth.account_id())
+    crate::device_code_auth::ensure_workspace_account_allowed(expected_workspace_ids, auth.account_id())
         .map_err(|message| std::io::Error::new(std::io::ErrorKind::PermissionDenied, message))
 }
 

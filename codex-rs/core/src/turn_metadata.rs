@@ -9,12 +9,12 @@ use std::sync::atomic::Ordering;
 use serde_json::Value;
 use tokio::task::JoinHandle;
 
-use crate::responses_metadata::CodexResponsesMetadata;
-use crate::responses_metadata::CodexResponsesRequestKind;
-use crate::responses_metadata::TurnMetadataWorkspace;
-use crate::responses_metadata::filter_extra_metadata;
-use crate::responses_metadata::subagent_header_value;
-use crate::responses_metadata::subagent_metadata_kind;
+use crate::request_metadata::RequestMetadata;
+use crate::request_metadata::RequestKind;
+use crate::request_metadata::TurnMetadataWorkspace;
+use crate::request_metadata::filter_extra_metadata;
+use crate::request_metadata::subagent_header_value;
+use crate::request_metadata::subagent_metadata_kind;
 use crate::sandbox_tags::permission_profile_sandbox_tag;
 use codex_git_utils::get_git_remote_urls_assume_git_repo;
 use codex_git_utils::get_git_repo_root;
@@ -72,13 +72,13 @@ pub async fn detached_memory_responses_metadata(
     session_source: &SessionSource,
     cwd: &AbsolutePathBuf,
     sandbox: Option<&str>,
-) -> CodexResponsesMetadata {
-    CodexResponsesMetadata {
-        request_kind: Some(CodexResponsesRequestKind::Memory),
+) -> RequestMetadata {
+    RequestMetadata {
+        request_kind: Some(RequestKind::Memory),
         subagent_header: subagent_header_value(session_source),
         sandbox: sandbox.map(ToString::to_string),
         workspaces: memory_workspaces(cwd).await,
-        ..CodexResponsesMetadata::new(installation_id, session_id, thread_id, window_id)
+        ..RequestMetadata::new(installation_id, session_id, thread_id, window_id)
     }
 }
 
@@ -188,9 +188,9 @@ impl TurnMetadataState {
         &self,
         installation_id: String,
         window_id: String,
-        request_kind: CodexResponsesRequestKind,
-    ) -> CodexResponsesMetadata {
-        CodexResponsesMetadata {
+        request_kind: RequestKind,
+    ) -> RequestMetadata {
+        RequestMetadata {
             installation_id,
             window_id,
             request_kind: Some(request_kind),
@@ -222,8 +222,8 @@ impl TurnMetadataState {
             .cloned()
     }
 
-    fn responses_metadata_template(&self) -> CodexResponsesMetadata {
-        CodexResponsesMetadata {
+    fn responses_metadata_template(&self) -> RequestMetadata {
+        RequestMetadata {
             turn_id: Some(self.turn_id.clone()),
             forked_from_thread_id: self.forked_from_thread_id,
             parent_thread_id: self.parent_thread_id,
@@ -238,7 +238,7 @@ impl TurnMetadataState {
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone(),
-            ..CodexResponsesMetadata::new(
+            ..RequestMetadata::new(
                 String::new(),
                 self.session_id.clone(),
                 self.thread_id.clone(),

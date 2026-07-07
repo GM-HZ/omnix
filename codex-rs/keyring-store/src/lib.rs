@@ -1,17 +1,15 @@
-use keyring::Entry;
-use keyring::Error as KeyringError;
+// Stub: OS keyring disabled per slim-agent-loop design.
 use std::error::Error;
 use std::fmt;
 use std::fmt::Debug;
-use tracing::trace;
 
 #[derive(Debug)]
 pub enum CredentialStoreError {
-    Other(KeyringError),
+    Other(std::io::Error),
 }
 
 impl CredentialStoreError {
-    pub fn new(error: KeyringError) -> Self {
+    pub fn new(error: std::io::Error) -> Self {
         Self::Other(error)
     }
 
@@ -21,7 +19,7 @@ impl CredentialStoreError {
         }
     }
 
-    pub fn into_error(self) -> KeyringError {
+    pub fn into_error(self) -> std::io::Error {
         match self {
             Self::Other(error) => error,
         }
@@ -38,7 +36,7 @@ impl fmt::Display for CredentialStoreError {
 
 impl Error for CredentialStoreError {}
 
-/// Shared credential store abstraction for keyring-backed implementations.
+/// Shared credential store abstraction — OS keychain backed (stubbed).
 pub trait KeyringStore: Debug + Send + Sync {
     fn load(&self, service: &str, account: &str) -> Result<Option<String>, CredentialStoreError>;
     fn save(&self, service: &str, account: &str, value: &str) -> Result<(), CredentialStoreError>;
@@ -49,112 +47,53 @@ pub trait KeyringStore: Debug + Send + Sync {
 pub struct DefaultKeyringStore;
 
 impl KeyringStore for DefaultKeyringStore {
-    fn load(&self, service: &str, account: &str) -> Result<Option<String>, CredentialStoreError> {
-        trace!("keyring.load start, service={service}, account={account}");
-        let entry = Entry::new(service, account).map_err(CredentialStoreError::new)?;
-        match entry.get_password() {
-            Ok(password) => {
-                trace!("keyring.load success, service={service}, account={account}");
-                Ok(Some(password))
-            }
-            Err(keyring::Error::NoEntry) => {
-                trace!("keyring.load no entry, service={service}, account={account}");
-                Ok(None)
-            }
-            Err(error) => {
-                trace!("keyring.load error, service={service}, account={account}, error={error}");
-                Err(CredentialStoreError::new(error))
-            }
-        }
+    fn load(&self, _service: &str, _account: &str) -> Result<Option<String>, CredentialStoreError> {
+        Ok(None)
     }
 
-    fn save(&self, service: &str, account: &str, value: &str) -> Result<(), CredentialStoreError> {
-        trace!(
-            "keyring.save start, service={service}, account={account}, value_len={}",
-            value.len()
-        );
-        let entry = Entry::new(service, account).map_err(CredentialStoreError::new)?;
-        match entry.set_password(value) {
-            Ok(()) => {
-                trace!("keyring.save success, service={service}, account={account}");
-                Ok(())
-            }
-            Err(error) => {
-                trace!("keyring.save error, service={service}, account={account}, error={error}");
-                Err(CredentialStoreError::new(error))
-            }
-        }
+    fn save(
+        &self,
+        _service: &str,
+        _account: &str,
+        _value: &str,
+    ) -> Result<(), CredentialStoreError> {
+        Err(CredentialStoreError::new(std::io::Error::other(
+            "OS keyring disabled per slim-agent-loop design",
+        )))
     }
 
-    fn delete(&self, service: &str, account: &str) -> Result<bool, CredentialStoreError> {
-        trace!("keyring.delete start, service={service}, account={account}");
-        let entry = Entry::new(service, account).map_err(CredentialStoreError::new)?;
-        match entry.delete_credential() {
-            Ok(()) => {
-                trace!("keyring.delete success, service={service}, account={account}");
-                Ok(true)
-            }
-            Err(keyring::Error::NoEntry) => {
-                trace!("keyring.delete no entry, service={service}, account={account}");
-                Ok(false)
-            }
-            Err(error) => {
-                trace!("keyring.delete error, service={service}, account={account}, error={error}");
-                Err(CredentialStoreError::new(error))
-            }
-        }
+    fn delete(&self, _service: &str, _account: &str) -> Result<bool, CredentialStoreError> {
+        Ok(false)
     }
 }
 
+#[cfg(test)]
 pub mod tests {
-    use super::CredentialStoreError;
-    use super::KeyringStore;
-    use keyring::Error as KeyringError;
-    use keyring::credential::CredentialApi as _;
-    use keyring::mock::MockCredential;
+    use super::*;
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::Mutex;
-    use std::sync::PoisonError;
 
     #[derive(Default, Clone, Debug)]
     pub struct MockKeyringStore {
-        credentials: Arc<Mutex<HashMap<String, Arc<MockCredential>>>>,
+        credentials: Arc<Mutex<HashMap<String, String>>>,
     }
 
     impl MockKeyringStore {
-        pub fn credential(&self, account: &str) -> Arc<MockCredential> {
-            let mut guard = self
-                .credentials
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            guard
-                .entry(account.to_string())
-                .or_insert_with(|| Arc::new(MockCredential::default()))
-                .clone()
+        pub fn credential(&self, account: &str) -> String {
+            let guard = self.credentials.lock().unwrap_or_else(|e| e.into_inner());
+            guard.get(account).cloned().unwrap_or_default()
         }
 
         pub fn saved_value(&self, account: &str) -> Option<String> {
-            let credential = {
-                let guard = self
-                    .credentials
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
-                guard.get(account).cloned()
-            }?;
-            credential.get_password().ok()
+            let guard = self.credentials.lock().unwrap_or_else(|e| e.into_inner());
+            guard.get(account).cloned()
         }
 
-        pub fn set_error(&self, account: &str, error: KeyringError) {
-            let credential = self.credential(account);
-            credential.set_error(error);
-        }
+        pub fn set_error(&self, _account: &str, _error: std::io::Error) {}
 
         pub fn contains(&self, account: &str) -> bool {
-            let guard = self
-                .credentials
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let guard = self.credentials.lock().unwrap_or_else(|e| e.into_inner());
             guard.contains_key(account)
         }
     }
@@ -165,23 +104,8 @@ pub mod tests {
             _service: &str,
             account: &str,
         ) -> Result<Option<String>, CredentialStoreError> {
-            let credential = {
-                let guard = self
-                    .credentials
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
-                guard.get(account).cloned()
-            };
-
-            let Some(credential) = credential else {
-                return Ok(None);
-            };
-
-            match credential.get_password() {
-                Ok(password) => Ok(Some(password)),
-                Err(KeyringError::NoEntry) => Ok(None),
-                Err(error) => Err(CredentialStoreError::new(error)),
-            }
+            let guard = self.credentials.lock().unwrap_or_else(|e| e.into_inner());
+            Ok(guard.get(account).cloned())
         }
 
         fn save(
@@ -190,37 +114,14 @@ pub mod tests {
             account: &str,
             value: &str,
         ) -> Result<(), CredentialStoreError> {
-            let credential = self.credential(account);
-            credential
-                .set_password(value)
-                .map_err(CredentialStoreError::new)
+            let mut guard = self.credentials.lock().unwrap_or_else(|e| e.into_inner());
+            guard.insert(account.to_string(), value.to_string());
+            Ok(())
         }
 
         fn delete(&self, _service: &str, account: &str) -> Result<bool, CredentialStoreError> {
-            let credential = {
-                let guard = self
-                    .credentials
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
-                guard.get(account).cloned()
-            };
-
-            let Some(credential) = credential else {
-                return Ok(false);
-            };
-
-            let removed = match credential.delete_credential() {
-                Ok(()) => Ok(true),
-                Err(KeyringError::NoEntry) => Ok(false),
-                Err(error) => Err(CredentialStoreError::new(error)),
-            }?;
-
-            let mut guard = self
-                .credentials
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            guard.remove(account);
-            Ok(removed)
+            let mut guard = self.credentials.lock().unwrap_or_else(|e| e.into_inner());
+            Ok(guard.remove(account).is_some())
         }
     }
 }

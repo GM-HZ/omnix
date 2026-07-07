@@ -13,8 +13,6 @@
 
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
-use codex_api::OPENAI_FILE_UPLOAD_LIMIT_BYTES;
-use codex_api::upload_openai_file;
 use codex_login::CodexAuth;
 use codex_utils_path_uri::PathUri;
 use serde_json::Value as JsonValue;
@@ -141,14 +139,7 @@ async fn build_uploaded_argument_value(
             resolved_path.display()
         )));
     }
-    if metadata.size > OPENAI_FILE_UPLOAD_LIMIT_BYTES {
-        return Err(contextualize_error(format!(
-            "file `{}` is too large: {} bytes exceeds the limit of {} bytes",
-            resolved_path.display(),
-            metadata.size,
-            OPENAI_FILE_UPLOAD_LIMIT_BYTES,
-        )));
-    }
+    
     let contents = fs
         .read_file_stream(&path_uri, /*sandbox*/ None)
         .await
@@ -158,24 +149,7 @@ async fn build_uploaded_argument_value(
         .and_then(|value| value.to_str())
         .unwrap_or("file")
         .to_string();
-    let upload_auth = codex_model_provider::auth_provider_from_auth(auth);
-    let uploaded = upload_openai_file(
-        turn_context.config.chatgpt_base_url.trim_end_matches('/'),
-        upload_auth.as_ref(),
-        file_name,
-        metadata.size,
-        contents,
-    )
-    .await
-    .map_err(|error| contextualize_error(error.to_string()))?;
-    Ok(serde_json::json!({
-        "download_url": uploaded.download_url,
-        "file_id": uploaded.file_id,
-        "mime_type": uploaded.mime_type,
-        "file_name": uploaded.file_name,
-        "uri": uploaded.uri,
-        "file_size_bytes": uploaded.file_size_bytes,
-    }))
+    Err("OpenAI file upload removed".to_string())
 }
 
 #[cfg(test)]
@@ -313,8 +287,6 @@ mod tests {
         let dir = tempdir().expect("temp dir");
         let file_path = dir.path().join("oversized.bin");
         let file = std::fs::File::create(&file_path).expect("create sparse file");
-        file.set_len(OPENAI_FILE_UPLOAD_LIMIT_BYTES + 1)
-            .expect("size sparse file");
         set_primary_environment_cwd(&mut turn_context, dir.path());
 
         let error = build_uploaded_argument_value(
@@ -328,7 +300,6 @@ mod tests {
         .expect_err("oversized file should be rejected");
 
         assert!(error.contains("is too large"));
-        assert!(error.contains(&(OPENAI_FILE_UPLOAD_LIMIT_BYTES + 1).to_string()));
     }
 
     #[tokio::test]

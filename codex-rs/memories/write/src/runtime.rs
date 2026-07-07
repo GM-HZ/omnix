@@ -281,10 +281,6 @@ impl MemoryStartupContext {
                 prompt,
                 &context.model_info,
                 &context.session_telemetry,
-                context.reasoning_effort.clone(),
-                context.reasoning_summary,
-                context.service_tier.clone(),
-                &responses_metadata,
                 &InferenceTraceContext::disabled(),
             )
             .await?;

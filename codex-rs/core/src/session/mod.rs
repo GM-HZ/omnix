@@ -40,7 +40,6 @@ use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::exec_policy::ExecPolicyManager;
 use crate::image_preparation::prepare_response_items;
 use crate::parse_turn_item;
-use crate::realtime_conversation::RealtimeConversationManager;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnEnvironment;
 use crate::session_prefix::format_inter_agent_completion_message;
@@ -384,6 +383,8 @@ use codex_tools::UnifiedExecShellMode;
 use codex_utils_absolute_path::AbsolutePathBuf;
 #[cfg(test)]
 use codex_utils_stream_parser::ProposedPlanSegment;
+use crate::realtime_conversation::RealtimeConversationManager;
+
 
 /// The high-level interface to the Codex system.
 /// It operates as a queue pair where you send submissions and receive events.

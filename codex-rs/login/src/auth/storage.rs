@@ -20,8 +20,8 @@ use tracing::warn;
 
 use super::BedrockApiKeyAuth;
 use crate::token_data::TokenData;
-use codex_agent_identity::AgentIdentityJwtClaims;
-use codex_agent_identity::decode_agent_identity_jwt;
+// AgentIdentityJwtClaims from local stub
+// decode_agent_identity_jwt from local stub
 use codex_config::types::AuthCredentialsStoreMode;
 pub use codex_config::types::AuthKeyringBackendKind;
 use codex_keyring_store::DefaultKeyringStore;
@@ -542,3 +542,18 @@ fn create_keyring_auth_storage(
 #[cfg(test)]
 #[path = "storage_tests.rs"]
 mod tests;
+
+// Stub types (moved from deleted codex_agent_identity crate)
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct AgentIdentityJwtClaims {
+    pub agent_runtime_id: String,
+    pub agent_private_key: String,
+    pub account_id: String,
+    pub chatgpt_user_id: String,
+    pub email: Option<String>,
+    pub plan_type: codex_protocol::account::PlanType,
+    pub chatgpt_account_is_fedramp: bool,
+}
+pub fn decode_agent_identity_jwt(_jwt: &str, _jwks: Option<&str>) -> std::io::Result<AgentIdentityJwtClaims> {
+    Err(std::io::Error::other("agent identity is no longer supported"))
+}

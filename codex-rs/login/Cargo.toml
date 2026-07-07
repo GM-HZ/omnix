@@ -10,7 +10,6 @@ workspace = true
 [dependencies]
 base64 = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
-codex-agent-identity = { workspace = true }
 codex-client = { workspace = true }
 codex-config = { workspace = true }
 codex-keyring-store = { workspace = true }
@@ -45,7 +44,6 @@ webbrowser = { workspace = true }
 anyhow = { workspace = true }
 core_test_support = { workspace = true }
 jsonwebtoken = { workspace = true }
-keyring = { workspace = true }
 pretty_assertions = { workspace = true }
 regex-lite = { workspace = true }
 serial_test = { workspace = true }

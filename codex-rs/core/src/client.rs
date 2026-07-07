@@ -33,16 +33,8 @@ use std::sync::atomic::Ordering;
 use codex_api::AgentIdentityTelemetry;
 use codex_api::ApiError;
 use codex_api::AuthProvider;
-use codex_api::CompactClient as ApiCompactClient;
-use codex_api::CompactionInput as ApiCompactionInput;
 use codex_api::Compression;
-use codex_api::MemoriesClient as ApiMemoriesClient;
-use codex_api::MemorySummarizeInput as ApiMemorySummarizeInput;
-use codex_api::MemorySummarizeOutput as ApiMemorySummarizeOutput;
 use codex_api::Provider as ApiProvider;
-use codex_api::RawMemory as ApiRawMemory;
-use codex_api::RealtimeCallClient as ApiRealtimeCallClient;
-use codex_api::RealtimeSessionConfig as ApiRealtimeSessionConfig;
 use codex_api::Reasoning;
 use codex_api::ReasoningContext;
 use codex_api::RequestTelemetry;
@@ -111,8 +103,8 @@ use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
 use crate::feedback_tags;
-use crate::responses_metadata::CodexResponsesMetadata;
-use crate::responses_metadata::subagent_header_value;
+use crate::request_metadata::RequestMetadata;
+use crate::request_metadata::subagent_header_value;
 use crate::util::emit_feedback_auth_recovery_tags;
 use codex_login::auth::AgentIdentityAuthPolicy;
 use codex_login::auth_env_telemetry::AuthEnvTelemetry;
@@ -139,7 +131,7 @@ pub const X_CODEX_TURN_METADATA_HEADER: &str = "x-codex-turn-metadata";
 pub const X_CODEX_PARENT_THREAD_ID_HEADER: &str = "x-codex-parent-thread-id";
 pub const X_CODEX_WINDOW_ID_HEADER: &str = "x-codex-window-id";
 pub const X_OPENAI_MEMGEN_REQUEST_HEADER: &str = "x-openai-memgen-request";
-pub const X_OPENAI_SUBAGENT_HEADER: &str = "x-openai-subagent";
+pub const X_SUBAGENT_HEADER: &str = "x-subagent";
 pub const X_RESPONSESAPI_INCLUDE_TIMING_METRICS_HEADER: &str =
     "x-responsesapi-include-timing-metrics";
 const X_CODEX_WS_STREAM_REQUEST_START_MS_CLIENT_METADATA_KEY: &str =
@@ -150,11 +142,6 @@ const RESPONSES_WEBSOCKETS_V2_BETA_HEADER_VALUE: &str = "responses_websockets=20
 const X_OPENAI_INTERNAL_CODEX_RESPONSES_LITE_HEADER: &str =
     "x-openai-internal-codex-responses-lite";
 const RESPONSES_ENDPOINT: &str = "/responses";
-const RESPONSES_COMPACT_ENDPOINT: &str = "/responses/compact";
-// `/responses/compact` is unary, so the timeout covers the full response rather than one idle
-// period between stream events.
-const COMPACT_REQUEST_TIMEOUT_IDLE_MULTIPLIER: u32 = 4;
-const MEMORIES_SUMMARIZE_ENDPOINT: &str = "/memories/trace_summarize";
 #[cfg(test)]
 pub(crate) const WEBSOCKET_CONNECT_TIMEOUT: Duration =
     Duration::from_millis(DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS);
@@ -515,195 +502,30 @@ impl ModelClient {
     ///
     /// The model selection and telemetry context are passed explicitly to keep `ModelClient`
     /// session-scoped.
+    /// Stub — compact not yet implemented for Chat Completions path.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn compact_conversation_history(
         &self,
-        prompt: &Prompt,
-        model_info: &ModelInfo,
-        turn_state: Option<Arc<OnceLock<String>>>,
-        settings: CompactConversationRequestSettings,
-        session_telemetry: &SessionTelemetry,
-        compaction_trace: &CompactionTraceContext,
-        responses_metadata: &CodexResponsesMetadata,
+        _prompt: &Prompt,
+        _model_info: &ModelInfo,
+        _turn_state: Option<Arc<OnceLock<String>>>,
+        _settings: CompactConversationRequestSettings,
+        _session_telemetry: &SessionTelemetry,
+        _compaction_trace: &CompactionTraceContext,
+        _responses_metadata: &RequestMetadata,
     ) -> Result<Vec<ResponseItem>> {
-        if prompt.input.is_empty() {
-            return Ok(Vec::new());
-        }
-        let client_setup = self.current_client_setup().await?;
-        let transport = ReqwestTransport::new(build_reqwest_client());
-        let request_telemetry = Self::build_request_telemetry(
-            session_telemetry,
-            AuthRequestTelemetryContext::new(
-                client_setup.auth.as_ref().map(CodexAuth::auth_mode),
-                client_setup.api_auth.as_ref(),
-                client_setup.agent_identity_telemetry.clone(),
-                PendingUnauthorizedRetry::default(),
-            ),
-            RequestRouteTelemetry::for_endpoint(RESPONSES_COMPACT_ENDPOINT),
-            self.state.auth_env_telemetry.clone(),
-        );
-        let request = self.build_responses_request(
-            &client_setup.api_provider,
-            prompt,
-            model_info,
-            settings.effort,
-            settings.summary,
-            settings.service_tier,
-            responses_metadata,
-        )?;
-        let ResponsesApiRequest {
-            model,
-            instructions,
-            mut input,
-            tools,
-            parallel_tool_calls,
-            reasoning,
-            service_tier,
-            prompt_cache_key,
-            text,
-            ..
-        } = request;
-        self.prepare_response_items_for_request(&mut input, /*store*/ false);
-        let payload = ApiCompactionInput {
-            model: &model,
-            input: &input,
-            instructions: &instructions,
-            tools,
-            parallel_tool_calls,
-            reasoning,
-            service_tier: service_tier.as_deref(),
-            prompt_cache_key: prompt_cache_key.as_deref(),
-            text,
-        };
-
-        let mut extra_headers = ApiHeaderMap::new();
-        if let Ok(header_value) = HeaderValue::from_str(&responses_metadata.installation_id) {
-            extra_headers.insert(X_CODEX_INSTALLATION_ID_HEADER, header_value);
-        }
-        extra_headers.extend(build_responses_headers(
-            self.state.beta_features_header.as_deref(),
-            turn_state.as_ref(),
-        ));
-        add_originator_header(&mut extra_headers, self.state.originator.as_str());
-        extra_headers.extend(self.build_responses_compatibility_headers(responses_metadata));
-        extra_headers.extend(build_session_headers(
-            Some(responses_metadata.session_id.to_string()),
-            Some(responses_metadata.thread_id.to_string()),
-        ));
-        if let Some(header_value) = self.generate_attestation_header_for().await {
-            extra_headers.insert(X_OAI_ATTESTATION_HEADER, header_value);
-        }
-        add_responses_lite_header(&mut extra_headers, model_info.use_responses_lite);
-        let compact_request_timeout = client_setup
-            .api_provider
-            .stream_idle_timeout
-            .saturating_mul(COMPACT_REQUEST_TIMEOUT_IDLE_MULTIPLIER);
-        let client =
-            ApiCompactClient::new(transport, client_setup.api_provider, client_setup.api_auth)
-                .with_telemetry(Some(request_telemetry));
-        let trace_attempt = compaction_trace.start_attempt(&payload);
-        let result = client
-            .compact_input(
-                &payload,
-                extra_headers,
-                compact_request_timeout,
-                turn_state.as_deref(),
-            )
-            .await
-            .map_err(|error| self.state.provider.map_api_error(error));
-        trace_attempt.record_result(result.as_deref());
-        result
+        tracing::warn!("compact_conversation_history: not yet implemented for ChatCompletions path");
+        Ok(Vec::new())
     }
 
-    pub(crate) async fn create_realtime_call_with_headers(
-        &self,
-        sdp: String,
-        session_config: ApiRealtimeSessionConfig,
-        mut extra_headers: ApiHeaderMap,
-        api_provider_override: Option<ApiProvider>,
-    ) -> Result<RealtimeWebrtcCallStart> {
-        // Create the media call over HTTP first, then retain matching auth so realtime can attach
-        // the server-side control WebSocket to the call id from that HTTP response.
-        let client_setup = self.current_client_setup().await?;
-        if let Some(header_value) = self.generate_attestation_header_for().await {
-            extra_headers.insert(X_OAI_ATTESTATION_HEADER, header_value);
-        }
-        let mut sideband_headers = extra_headers.clone();
-        sideband_headers.extend(sideband_websocket_auth_headers(
-            client_setup.api_auth.as_ref(),
-        ));
-        let transport = ReqwestTransport::new(build_reqwest_client());
-        let api_provider = api_provider_override.unwrap_or(client_setup.api_provider);
-        let response = ApiRealtimeCallClient::new(transport, api_provider, client_setup.api_auth)
-            .create_with_session_and_headers(sdp, session_config, extra_headers)
-            .await
-            .map_err(|error| self.state.provider.map_api_error(error))?;
-        Ok(RealtimeWebrtcCallStart {
-            sdp: response.sdp,
-            call_id: response.call_id,
-            sideband_headers,
-        })
-    }
-
-    /// Builds memory summaries for each provided normalized raw memory.
-    ///
-    /// This is a unary call (no streaming) to `/v1/memories/trace_summarize`.
-    ///
-    /// The model selection, reasoning effort, and telemetry context are passed explicitly to keep
-    /// `ModelClient` session-scoped.
-    pub async fn summarize_memories(
-        &self,
-        raw_memories: Vec<ApiRawMemory>,
-        model_info: &ModelInfo,
-        effort: Option<ReasoningEffortConfig>,
-        session_telemetry: &SessionTelemetry,
-    ) -> Result<Vec<ApiMemorySummarizeOutput>> {
-        if raw_memories.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let client_setup = self.current_client_setup().await?;
-        let transport = ReqwestTransport::new(build_reqwest_client());
-        let request_telemetry = Self::build_request_telemetry(
-            session_telemetry,
-            AuthRequestTelemetryContext::new(
-                client_setup.auth.as_ref().map(CodexAuth::auth_mode),
-                client_setup.api_auth.as_ref(),
-                client_setup.agent_identity_telemetry.clone(),
-                PendingUnauthorizedRetry::default(),
-            ),
-            RequestRouteTelemetry::for_endpoint(MEMORIES_SUMMARIZE_ENDPOINT),
-            self.state.auth_env_telemetry.clone(),
-        );
-        let client =
-            ApiMemoriesClient::new(transport, client_setup.api_provider, client_setup.api_auth)
-                .with_telemetry(Some(request_telemetry));
-
-        let payload = ApiMemorySummarizeInput {
-            model: model_info.slug.clone(),
-            raw_memories,
-            reasoning: effort
-                .map(reasoning_effort_for_request)
-                .map(|effort| Reasoning {
-                    effort: Some(effort),
-                    summary: None,
-                    context: None,
-                }),
-        };
-
-        client
-            .summarize_input(&payload, self.build_subagent_headers())
-            .await
-            .map_err(|error| self.state.provider.map_api_error(error))
-    }
-
+    
     fn build_subagent_headers(&self) -> ApiHeaderMap {
         let mut extra_headers = ApiHeaderMap::new();
         add_originator_header(&mut extra_headers, self.state.originator.as_str());
         if let Some(subagent) = subagent_header_value(&self.state.session_source)
             && let Ok(val) = HeaderValue::from_str(&subagent)
         {
-            extra_headers.insert(X_OPENAI_SUBAGENT_HEADER, val);
+            extra_headers.insert(X_SUBAGENT_HEADER, val);
         }
         if matches!(
             self.state.session_source,
@@ -719,7 +541,7 @@ impl ModelClient {
 
     fn build_responses_compatibility_headers(
         &self,
-        responses_metadata: &CodexResponsesMetadata,
+        responses_metadata: &RequestMetadata,
     ) -> ApiHeaderMap {
         let mut extra_headers = responses_metadata.compatibility_headers();
         if matches!(
@@ -736,7 +558,7 @@ impl ModelClient {
 
     fn build_ws_client_metadata(
         &self,
-        responses_metadata: &CodexResponsesMetadata,
+        responses_metadata: &RequestMetadata,
         use_responses_lite: bool,
     ) -> HashMap<String, String> {
         let mut client_metadata = responses_metadata.client_metadata();
@@ -815,7 +637,7 @@ impl ModelClient {
         effort: Option<ReasoningEffortConfig>,
         summary: ReasoningSummaryConfig,
         service_tier: Option<String>,
-        responses_metadata: &CodexResponsesMetadata,
+        responses_metadata: &RequestMetadata,
     ) -> Result<ResponsesApiRequest> {
         let mut input = prompt.get_formatted_input_for_request(model_info.use_responses_lite);
         if !self.state.provider.info().is_openai() {
@@ -1027,7 +849,7 @@ fn deepseek_thinking_for_effort(model_info: &ModelInfo) -> Option<codex_api::Dee
         session_telemetry: &SessionTelemetry,
         api_provider: codex_api::Provider,
         api_auth: SharedAuthProvider,
-        responses_metadata: &CodexResponsesMetadata,
+        responses_metadata: &RequestMetadata,
         auth_context: AuthRequestTelemetryContext,
         request_route_telemetry: RequestRouteTelemetry,
     ) -> std::result::Result<ApiWebSocketConnection, ApiError> {
@@ -1084,7 +906,7 @@ fn deepseek_thinking_for_effort(model_info: &ModelInfo) -> Option<codex_api::Dee
     /// Builds websocket handshake headers for both prewarm and turn-time reconnect.
     async fn build_websocket_headers(
         &self,
-        responses_metadata: &CodexResponsesMetadata,
+        responses_metadata: &RequestMetadata,
     ) -> ApiHeaderMap {
         let mut headers = build_responses_headers(
             self.state.beta_features_header.as_deref(),
@@ -1145,7 +967,7 @@ impl ModelClientSession {
     /// regardless of transport choice.
     async fn build_responses_options(
         &self,
-        responses_metadata: &CodexResponsesMetadata,
+        responses_metadata: &RequestMetadata,
         compression: Compression,
         use_responses_lite: bool,
     ) -> ApiResponsesOptions {
@@ -1271,7 +1093,7 @@ impl ModelClientSession {
     pub async fn preconnect_websocket(
         &mut self,
         session_telemetry: &SessionTelemetry,
-        responses_metadata: &CodexResponsesMetadata,
+        responses_metadata: &RequestMetadata,
     ) -> std::result::Result<(), ApiError> {
         if !self.client.responses_websocket_enabled() {
             return Ok(());
@@ -1413,7 +1235,7 @@ impl ModelClientSession {
         effort: Option<ReasoningEffortConfig>,
         summary: ReasoningSummaryConfig,
         service_tier: Option<String>,
-        responses_metadata: &CodexResponsesMetadata,
+        responses_metadata: &RequestMetadata,
         inference_trace: &InferenceTraceContext,
     ) -> Result<ResponseStream> {
         let auth_manager = self.client.state.provider.auth_manager();
@@ -1598,7 +1420,7 @@ impl ModelClientSession {
         effort: Option<ReasoningEffortConfig>,
         summary: ReasoningSummaryConfig,
         service_tier: Option<String>,
-        responses_metadata: &CodexResponsesMetadata,
+        responses_metadata: &RequestMetadata,
         warmup: bool,
         request_trace: Option<W3cTraceContext>,
         inference_trace: &InferenceTraceContext,
@@ -1788,7 +1610,7 @@ impl ModelClientSession {
         effort: Option<ReasoningEffortConfig>,
         summary: ReasoningSummaryConfig,
         service_tier: Option<String>,
-        responses_metadata: &CodexResponsesMetadata,
+        responses_metadata: &RequestMetadata,
     ) -> Result<()> {
         if !self.client.responses_websocket_enabled() {
             return Ok(());
@@ -1846,61 +1668,15 @@ impl ModelClientSession {
         prompt: &Prompt,
         model_info: &ModelInfo,
         session_telemetry: &SessionTelemetry,
-        effort: Option<ReasoningEffortConfig>,
-        summary: ReasoningSummaryConfig,
-        service_tier: Option<String>,
-        responses_metadata: &CodexResponsesMetadata,
         inference_trace: &InferenceTraceContext,
     ) -> Result<ResponseStream> {
-        let wire_api = self.client.state.provider.info().wire_api;
-        match wire_api {
-            WireApi::Responses => {
-                if self.client.responses_websocket_enabled() {
-                    let request_trace = current_span_w3c_trace_context();
-                    match self
-                        .stream_responses_websocket(
-                            prompt,
-                            model_info,
-                            session_telemetry,
-                            effort.clone(),
-                            summary,
-                            service_tier.clone(),
-                            responses_metadata,
-                            /*warmup*/ false,
-                            request_trace,
-                            inference_trace,
-                        )
-                        .await?
-                    {
-                        WebsocketStreamOutcome::Stream(stream) => return Ok(stream),
-                        WebsocketStreamOutcome::FallbackToHttp => {
-                            self.try_switch_fallback_transport(session_telemetry, model_info);
-                        }
-                    }
-                }
-
-                self.stream_responses_api(
-                    prompt,
-                    model_info,
-                    session_telemetry,
-                    effort,
-                    summary,
-                    service_tier,
-                    responses_metadata,
-                    inference_trace,
-                )
-                .await
-            }
-            WireApi::ChatCompletions => {
-                self.stream_chat_completions(
-                    prompt,
-                    model_info,
-                    session_telemetry,
-                    inference_trace,
-                )
-                .await
-            }
-        }
+        self.stream_chat_completions(
+            prompt,
+            model_info,
+            session_telemetry,
+            inference_trace,
+        )
+        .await
     }
 
     /// Permanently disables WebSockets for this Codex session and resets WebSocket state.
@@ -2241,7 +2017,7 @@ struct WebsocketConnectParams<'a> {
     session_telemetry: &'a SessionTelemetry,
     api_provider: codex_api::Provider,
     api_auth: SharedAuthProvider,
-    responses_metadata: &'a CodexResponsesMetadata,
+    responses_metadata: &'a RequestMetadata,
     auth_context: AuthRequestTelemetryContext,
     request_route_telemetry: RequestRouteTelemetry,
 }
@@ -2588,7 +2364,10 @@ fn create_tools_json_for_chat_completions(
                     "function": {
                         "name": freeform.name,
                         "description": freeform.description,
-                        "parameters": {},
+                        "parameters": {
+                            "type": "object",
+                            "properties": {}
+                        },
                     }
                 });
                 result.push(func_obj);

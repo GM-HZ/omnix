@@ -8,13 +8,13 @@ use super::X_CODEX_INSTALLATION_ID_HEADER;
 use super::X_CODEX_PARENT_THREAD_ID_HEADER;
 use super::X_CODEX_TURN_METADATA_HEADER;
 use super::X_CODEX_WINDOW_ID_HEADER;
-use super::X_OPENAI_SUBAGENT_HEADER;
+use super::X_SUBAGENT_HEADER;
 use crate::AttestationContext;
 use crate::AttestationProvider;
 use crate::GenerateAttestationFuture;
-use crate::responses_metadata::CodexResponsesMetadata;
-use crate::test_support::TestCodexResponsesRequestKind;
-use crate::test_support::responses_metadata as test_responses_metadata;
+use crate::request_metadata::RequestMetadata;
+use crate::test_support::TestRequestKind;
+use crate::test_support::request_metadata as test_request_metadata;
 use codex_api::AgentIdentityTelemetry;
 use codex_api::ApiError;
 use codex_api::ResponseEvent;
@@ -164,12 +164,12 @@ async fn compact_uses_bearer_after_agent_identity_session_fallback() -> anyhow::
         },
         ..Default::default()
     };
-    let responses_metadata = test_responses_metadata_for_client(
+    let request_metadata = test_request_metadata_for_client(
         &client,
         /*turn_id*/ None,
         format!("{}:0", client.state.thread_id),
         /*parent_thread_id*/ None,
-        TestCodexResponsesRequestKind::Turn,
+        TestRequestKind::Turn,
     );
 
     let output = client
@@ -184,7 +184,7 @@ async fn compact_uses_bearer_after_agent_identity_session_fallback() -> anyhow::
             },
             &test_session_telemetry(),
             &CompactionTraceContext::disabled(),
-            &responses_metadata,
+            &request_metadata,
         )
         .await?;
 
@@ -220,15 +220,15 @@ fn test_model_provider() -> SharedModelProvider {
     test_model_client(SessionSource::Cli).state.provider.clone()
 }
 
-fn test_responses_metadata_for_client(
+fn test_request_metadata_for_client(
     client: &ModelClient,
     turn_id: Option<&str>,
     window_id: String,
     parent_thread_id: Option<ThreadId>,
-    request_kind: TestCodexResponsesRequestKind,
-) -> CodexResponsesMetadata {
+    request_kind: TestRequestKind,
+) -> RequestMetadata {
     let thread_id = client.state.thread_id.to_string();
-    test_responses_metadata(
+    test_request_metadata(
         TEST_INSTALLATION_ID,
         &thread_id,
         &thread_id,
@@ -465,7 +465,7 @@ fn build_subagent_headers_sets_other_subagent_label() {
     )));
     let headers = client.build_subagent_headers();
     let value = headers
-        .get(X_OPENAI_SUBAGENT_HEADER)
+        .get(X_SUBAGENT_HEADER)
         .and_then(|value| value.to_str().ok());
     assert_eq!(value, Some("memory_consolidation"));
 }
@@ -477,7 +477,7 @@ fn build_subagent_headers_sets_internal_memory_consolidation_label() {
     ));
     let headers = client.build_subagent_headers();
     let value = headers
-        .get(X_OPENAI_SUBAGENT_HEADER)
+        .get(X_SUBAGENT_HEADER)
         .and_then(|value| value.to_str().ok());
     assert_eq!(value, Some("memory_consolidation"));
     assert_eq!(
@@ -499,15 +499,15 @@ fn build_ws_client_metadata_includes_window_lineage_and_turn_metadata() {
 
     let thread_id = client.state.thread_id.to_string();
     let expected_window_id = format!("{thread_id}:1");
-    let responses_metadata = test_responses_metadata_for_client(
+    let request_metadata = test_request_metadata_for_client(
         &client,
         Some("turn-123"),
         expected_window_id.clone(),
         Some(parent_thread_id),
-        TestCodexResponsesRequestKind::Turn,
+        TestRequestKind::Turn,
     );
     let client_metadata =
-        client.build_ws_client_metadata(&responses_metadata, /*use_responses_lite*/ false);
+        client.build_ws_client_metadata(&request_metadata, /*use_responses_lite*/ false);
     let parent_thread_id = parent_thread_id.to_string();
     let turn_metadata: serde_json::Value = serde_json::from_str(
         client_metadata
@@ -543,20 +543,18 @@ fn build_ws_client_metadata_includes_window_lineage_and_turn_metadata() {
     }
     assert_eq!(
         client_metadata
-            .get(X_OPENAI_SUBAGENT_HEADER)
+            .get(X_SUBAGENT_HEADER)
             .map(String::as_str),
         Some("collab_spawn")
     );
 }
 
 #[tokio::test]
-async fn summarize_memories_returns_empty_for_empty_input() {
     let client = test_model_client(SessionSource::Cli);
     let model_info = test_model_info();
     let session_telemetry = test_session_telemetry();
 
     let output = client
-        .summarize_memories(
             Vec::new(),
             &model_info,
             /*effort*/ None,
@@ -653,7 +651,6 @@ async fn response_stream_records_last_model_feedback_ids() {
 #[tokio::test]
 async fn bedrock_unauthorized_error_uses_provider_mapping() {
     let provider = create_model_provider(
-        ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None),
         /*auth_manager*/ None,
     );
     let mut auth_recovery = None;
@@ -831,16 +828,16 @@ fn model_client_with_counting_attestation(
 async fn websocket_handshake_includes_attestation_for_chatgpt_codex_responses() {
     let (model_client, attestation_calls) =
         model_client_with_counting_attestation(/*include_attestation*/ true);
-    let responses_metadata = test_responses_metadata_for_client(
+    let request_metadata = test_request_metadata_for_client(
         &model_client,
         /*turn_id*/ None,
         format!("{}:0", model_client.state.thread_id),
         /*parent_thread_id*/ None,
-        TestCodexResponsesRequestKind::WebsocketConnection,
+        TestRequestKind::WebsocketConnection,
     );
 
     let headers = model_client
-        .build_websocket_headers(&responses_metadata)
+        .build_websocket_headers(&request_metadata)
         .await;
 
     assert_eq!(

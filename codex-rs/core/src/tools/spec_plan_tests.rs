@@ -7,7 +7,6 @@ use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_mcp::ToolInfo;
 use codex_model_provider::create_model_provider;
-use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
@@ -267,9 +266,7 @@ fn use_chatgpt_auth(turn: &mut TurnContext) {
 }
 
 fn use_bedrock_provider(turn: &mut TurnContext) {
-    let provider_info = ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None);
     update_config(turn, |config| {
-        config.model_provider_id = AMAZON_BEDROCK_PROVIDER_ID.to_string();
         config.model_provider = provider_info.clone();
     });
     turn.provider = create_model_provider(provider_info, turn.auth_manager.clone());

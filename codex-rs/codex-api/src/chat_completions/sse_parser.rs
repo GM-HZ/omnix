@@ -6,8 +6,8 @@ use crate::common::ResponseStream;
 use crate::error::ApiError;
 use codex_client::ByteStream;
 use codex_client::StreamResponse;
-use codex_protocol::OmnixMessage;
-use codex_protocol::OmnixToolCall;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::TokenUsage;
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
@@ -77,9 +77,7 @@ async fn process_chat_completions_sse(
             }
             Ok(Some(Err(e))) => {
                 let _ = tx
-                    .send(Err(ApiError::Stream(format!(
-                        "SSE stream error: {e}"
-                    ))))
+                    .send(Err(ApiError::Stream(format!("SSE stream error: {e}"))))
                     .await;
                 return;
             }
@@ -123,10 +121,8 @@ async fn process_chat_completions_sse(
 
             // Ensure OutputItemAdded is emitted before any delta event so the
             // turn loop has an "active item" to attach deltas to.
-            if !item_added_emitted
-                && (delta.content.is_some() || delta.reasoning_content.is_some())
+            if !item_added_emitted && (delta.content.is_some() || delta.reasoning_content.is_some())
             {
-                use codex_protocol::models::ResponseItem;
                 let placeholder = ResponseItem::Message {
                     id: Some(chunk.id.clone()),
                     role: "assistant".to_string(),
@@ -134,14 +130,18 @@ async fn process_chat_completions_sse(
                     phase: None,
                     internal_chat_message_metadata_passthrough: None,
                 };
-                let _ = tx.send(Ok(ResponseEvent::OutputItemAdded(placeholder))).await;
+                let _ = tx
+                    .send(Ok(ResponseEvent::OutputItemAdded(placeholder)))
+                    .await;
                 item_added_emitted = true;
             }
 
             // Content text delta
             if let Some(ref text) = delta.content {
                 content_acc.push_str(text);
-                let _ = tx.send(Ok(ResponseEvent::OutputTextDelta(text.clone()))).await;
+                let _ = tx
+                    .send(Ok(ResponseEvent::OutputTextDelta(text.clone())))
+                    .await;
             }
 
             // Reasoning/thinking delta (DeepSeek-R1 style)
@@ -166,25 +166,15 @@ async fn process_chat_completions_sse(
             if let Some(ref reason) = choice.finish_reason {
                 match reason.as_str() {
                     "tool_calls" => {
-                        flush_tool_calls(
-                            &mut tool_slots,
-                            &content_acc,
-                            &thinking_acc,
-                            &tx,
-                        )
-                        .await;
+                        flush_tool_calls(&mut tool_slots, &content_acc, &thinking_acc, &tx).await;
                         content_acc.clear();
                         thinking_acc.clear();
                     }
                     "stop" | "length" => {
-                        flush_text_response(
-                            &response_id,
-                            &content_acc,
-                            &thinking_acc,
-                            &usage,
-                            &tx,
-                        )
-                        .await;
+                        flush_text_response(&response_id, &content_acc, &thinking_acc, &usage, &tx)
+                            .await;
+                        content_acc.clear();
+                        thinking_acc.clear();
                     }
                     _ => {}
                 }
@@ -194,32 +184,24 @@ async fn process_chat_completions_sse(
 
     // End of stream — flush any remaining content
     if !content_acc.is_empty() || !thinking_acc.is_empty() {
-        flush_text_response(
-            &response_id,
-            &content_acc,
-            &thinking_acc,
-            &usage,
-            &tx,
-        )
-        .await;
+        flush_text_response(&response_id, &content_acc, &thinking_acc, &usage, &tx).await;
     }
 
     // Emit final usage
-    if let Some(ref u) = usage {
-        let _ = tx
-            .send(Ok(ResponseEvent::Completed {
-                response_id: response_id.clone(),
-                token_usage: Some(TokenUsage {
-                    input_tokens: u.prompt_tokens as i64,
-                    cached_input_tokens: 0,
-                    output_tokens: u.completion_tokens as i64,
-                    reasoning_output_tokens: 0,
-                    total_tokens: u.total_tokens as i64,
-                }),
-                end_turn: Some(true),
-            }))
-            .await;
-    }
+    let token_usage = usage.as_ref().map(|u| TokenUsage {
+        input_tokens: u.prompt_tokens as i64,
+        cached_input_tokens: 0,
+        output_tokens: u.completion_tokens as i64,
+        reasoning_output_tokens: 0,
+        total_tokens: u.total_tokens as i64,
+    });
+    let _ = tx
+        .send(Ok(ResponseEvent::Completed {
+            response_id: response_id.clone(),
+            token_usage,
+            end_turn: Some(true),
+        }))
+        .await;
 }
 
 fn accumulate_tool_call(slots: &mut Vec<ToolCallSlot>, tc: &ChunkDeltaToolCall) {
@@ -247,37 +229,54 @@ async fn flush_tool_calls(
     thinking: &str,
     tx: &mpsc::Sender<Result<ResponseEvent, ApiError>>,
 ) {
-    // If there was text content before tool calls, emit a message with it first
     let has_content = !content.is_empty();
     let has_thinking = !thinking.is_empty();
 
-    let mut omnix_tool_calls: Vec<OmnixToolCall> = Vec::new();
+    let mut tool_items: Vec<ResponseItem> = Vec::new();
     for slot in tool_slots.drain(..) {
         if slot.id.is_empty() {
             continue;
         }
-        omnix_tool_calls.push(OmnixToolCall::new(
-            slot.id,
-            slot.name,
-            slot.arguments,
-        ));
+        tool_items.push(ResponseItem::FunctionCall {
+            call_id: slot.id,
+            name: slot.name,
+            arguments: slot.arguments,
+            id: None,
+            namespace: None,
+            internal_chat_message_metadata_passthrough: None,
+        });
     }
 
     if has_content || has_thinking {
-        let msg = if has_content {
-            OmnixMessage::assistant_with_thinking(
-                Some(content.to_string()),
-                thinking.to_string(),
-            )
-        } else {
-            OmnixMessage::assistant_with_thinking(None, thinking.to_string())
+        let mut content_items = Vec::new();
+        if has_thinking {
+            // Emit thinking/reasoning as a separate content item so it is not lost
+            content_items.push(ContentItem::OutputText {
+                text: format!("[thinking]\n{}\n[/thinking]", thinking),
+            });
+        }
+        if has_content {
+            content_items.push(ContentItem::OutputText {
+                text: content.to_string(),
+            });
+        } else if !has_thinking {
+            // unreachable, but safe fallback
+            content_items.push(ContentItem::OutputText {
+                text: String::new(),
+            });
+        }
+        let msg_item = ResponseItem::Message {
+            id: None,
+            role: "assistant".to_string(),
+            content: content_items,
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
         };
-        let _ = tx.send(Ok(ResponseEvent::ChatOutputItemDone(msg))).await;
+        let _ = tx.send(Ok(ResponseEvent::OutputItemDone(msg_item))).await;
     }
 
-    if !omnix_tool_calls.is_empty() {
-        let msg = OmnixMessage::assistant_tool_calls(omnix_tool_calls);
-        let _ = tx.send(Ok(ResponseEvent::ChatOutputItemDone(msg))).await;
+    for tool_item in tool_items {
+        let _ = tx.send(Ok(ResponseEvent::OutputItemDone(tool_item))).await;
     }
 }
 
@@ -292,14 +291,22 @@ async fn flush_text_response(
         return;
     }
 
-    let msg = if !content.is_empty() {
-        OmnixMessage::assistant_with_thinking(
-            Some(content.to_string()),
-            thinking.to_string(),
-        )
+    // Build content items for ResponseItem::Message
+    let display_text = if !content.is_empty() {
+        content.to_string()
     } else {
-        OmnixMessage::assistant_with_thinking(None, thinking.to_string())
+        thinking.to_string()
     };
 
-    let _ = tx.send(Ok(ResponseEvent::ChatOutputItemDone(msg))).await;
+    let response_item = ResponseItem::Message {
+        id: Some(_response_id.to_string()),
+        role: "assistant".to_string(),
+        content: vec![ContentItem::OutputText { text: display_text }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+
+    let _ = tx
+        .send(Ok(ResponseEvent::OutputItemDone(response_item)))
+        .await;
 }

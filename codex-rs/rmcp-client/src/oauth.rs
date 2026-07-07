@@ -815,7 +815,6 @@ mod tests {
     use super::*;
     use anyhow::Result;
     use codex_secrets::compute_keyring_account;
-    use keyring::Error as KeyringError;
     use pretty_assertions::assert_eq;
     use std::sync::Arc;
     use std::sync::Mutex;
@@ -909,7 +908,7 @@ mod tests {
         let tokens = sample_tokens();
         let expected = tokens.clone();
         let key = super::compute_store_key(&tokens.server_name, &tokens.url)?;
-        store.set_error(&key, KeyringError::Invalid("error".into(), "load".into()));
+        store.set_error(&key, std::io::Error::other("error"));
 
         super::save_oauth_tokens_to_file(&tokens)?;
 

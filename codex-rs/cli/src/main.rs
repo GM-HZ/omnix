@@ -8,22 +8,17 @@ use codex_app_server_daemon::LifecycleCommand as AppServerLifecycleCommand;
 use codex_app_server_daemon::RemoteControlMode as AppServerRemoteControlMode;
 use codex_arg0::Arg0DispatchPaths;
 use codex_arg0::arg0_dispatch_or_else;
-use codex_chatgpt::apply_command::ApplyCommand;
-use codex_chatgpt::apply_command::run_apply_command;
 use codex_cli::read_access_token_from_stdin;
 use codex_cli::read_api_key_from_stdin;
 use codex_cli::run_login_status;
 use codex_cli::run_login_with_access_token;
 use codex_cli::run_login_with_api_key;
-use codex_cli::run_login_with_chatgpt;
-use codex_cli::run_login_with_device_code;
 use codex_cli::run_logout;
 use codex_cloud_tasks::Cli as CloudTasksCli;
 use codex_exec::Cli as ExecCli;
 use codex_exec::Command as ExecCommand;
 use codex_exec::ReviewArgs;
 use codex_execpolicy::ExecPolicyCheckCommand;
-use codex_responses_api_proxy::Args as ResponsesApiProxyArgs;
 use codex_rollout_trace::REDUCED_STATE_FILE_NAME;
 use codex_rollout_trace::replay_bundle;
 use codex_state::StateRuntime;
@@ -175,7 +170,6 @@ enum Subcommand {
 
     /// Apply the latest diff produced by Codex agent as a `git apply` to your local working tree.
     #[clap(visible_alias = "a")]
-    Apply(ApplyCommand),
 
     /// Resume a previous interactive session (picker by default; use --last to continue the most recent).
     Resume(ResumeCommand),
@@ -198,7 +192,6 @@ enum Subcommand {
 
     /// Internal: run the responses API proxy.
     #[clap(hide = true)]
-    ResponsesApiProxy(ResponsesApiProxyArgs),
 
     /// Internal: relay stdio to a Unix domain socket.
     #[clap(hide = true, name = "stdio-to-uds")]
@@ -484,14 +477,8 @@ struct LoginCommand {
     api_key: Option<String>,
 
     #[arg(long = "device-auth")]
-    use_device_code: bool,
-
-    /// EXPERIMENTAL: Use custom OAuth issuer base URL (advanced)
-    /// Override the OAuth issuer base URL (advanced)
     #[arg(long = "experimental_issuer", value_name = "URL", hide = true)]
     issuer_base_url: Option<String>,
-
-    /// EXPERIMENTAL: Use custom OAuth client ID (advanced)
     #[arg(long = "experimental_client-id", value_name = "CLIENT_ID", hide = true)]
     client_id: Option<String>,
 
@@ -1356,13 +1343,6 @@ async fn cli_main(
                             "Choose one login credential source: --with-api-key or --with-access-token."
                         );
                         std::process::exit(1);
-                    } else if login_cli.use_device_code {
-                        run_login_with_device_code(
-                            login_cli.config_overrides,
-                            login_cli.issuer_base_url,
-                            login_cli.client_id,
-                        )
-                        .await;
                     } else if login_cli.api_key.is_some() {
                         eprintln!(
                             "The --api-key flag is no longer supported. Pipe the key instead, e.g. `printenv OPENAI_API_KEY | codex login --with-api-key`."
@@ -1375,7 +1355,6 @@ async fn cli_main(
                         let access_token = read_access_token_from_stdin();
                         run_login_with_access_token(login_cli.config_overrides, access_token).await;
                     } else {
-                        run_login_with_chatgpt(login_cli.config_overrides).await;
                     }
                 }
             }
@@ -1545,27 +1524,6 @@ async fn cli_main(
                 run_execpolicycheck(cmd)?
             }
         },
-        Some(Subcommand::Apply(mut apply_cli)) => {
-            reject_remote_mode_for_subcommand(
-                root_remote.as_deref(),
-                root_remote_auth_token_env.as_deref(),
-                "apply",
-            )?;
-            prepend_config_flags(
-                &mut apply_cli.config_overrides,
-                root_config_overrides.clone(),
-            );
-            run_apply_command(apply_cli, /*cwd*/ None).await?;
-        }
-        Some(Subcommand::ResponsesApiProxy(args)) => {
-            reject_remote_mode_for_subcommand(
-                root_remote.as_deref(),
-                root_remote_auth_token_env.as_deref(),
-                "responses-api-proxy",
-            )?;
-            tokio::task::spawn_blocking(move || codex_responses_api_proxy::run_main(args))
-                .await??;
-        }
         Some(Subcommand::StdioToUds(cmd)) => {
             reject_remote_mode_for_subcommand(
                 root_remote.as_deref(),
@@ -2131,8 +2089,6 @@ fn unsupported_subcommand_name_for_strict_config(
         Some(Subcommand::Sandbox(_)) => Some("sandbox"),
         Some(Subcommand::Debug(_)) => Some("debug"),
         Some(Subcommand::Execpolicy(_)) => Some("execpolicy"),
-        Some(Subcommand::Apply(_)) => Some("apply"),
-        Some(Subcommand::ResponsesApiProxy(_)) => Some("responses-api-proxy"),
         Some(Subcommand::StdioToUds(_)) => Some("stdio-to-uds"),
         Some(Subcommand::Features(_)) => Some("features"),
     }

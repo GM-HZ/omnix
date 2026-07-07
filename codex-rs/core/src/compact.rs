@@ -9,9 +9,9 @@ use crate::hook_runtime::PostCompactHookOutcome;
 use crate::hook_runtime::PreCompactHookOutcome;
 use crate::hook_runtime::run_post_compact_hooks;
 use crate::hook_runtime::run_pre_compact_hooks;
-use crate::responses_metadata::CodexResponsesMetadata;
-use crate::responses_metadata::CodexResponsesRequestKind;
-use crate::responses_metadata::CompactionTurnMetadata;
+use crate::request_metadata::RequestMetadata;
+use crate::request_metadata::RequestKind;
+use crate::request_metadata::CompactionTurnMetadata;
 #[cfg(test)]
 use crate::session::PreviousTurnSettings;
 use crate::session::session::Session;
@@ -241,13 +241,6 @@ async fn run_compact_task_inner_impl(
     // Reuse one client session so turn-scoped state (sticky routing, websocket incremental
     // request tracking)
     // survives retries within this compact turn.
-    let window_id = sess.current_window_id().await;
-    let responses_metadata = turn_context.turn_metadata_state.to_responses_metadata(
-        sess.installation_id.clone(),
-        window_id,
-        CodexResponsesRequestKind::Compaction(compaction_metadata),
-    );
-
     loop {
         // Clone is required because of the loop
         let turn_input = history
@@ -263,7 +256,6 @@ async fn run_compact_task_inner_impl(
             &sess,
             turn_context.as_ref(),
             &mut client_session,
-            &responses_metadata,
             &prompt,
         )
         .await;
@@ -662,7 +654,6 @@ async fn drain_to_completed(
     sess: &Session,
     turn_context: &TurnContext,
     client_session: &mut ModelClientSession,
-    responses_metadata: &CodexResponsesMetadata,
     prompt: &Prompt,
 ) -> CodexResult<()> {
     let mut stream = client_session
@@ -670,10 +661,6 @@ async fn drain_to_completed(
             prompt,
             &turn_context.model_info,
             &turn_context.session_telemetry,
-            turn_context.reasoning_effort.clone(),
-            turn_context.reasoning_summary,
-            turn_context.config.service_tier.clone(),
-            responses_metadata,
             // Rollout tracing currently models remote compaction only; local compaction streams
             // are left untraced until the reducer has a first-class local compaction lifecycle.
             &InferenceTraceContext::disabled(),

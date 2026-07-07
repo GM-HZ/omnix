@@ -287,8 +287,7 @@ mod tests {
 
     #[test]
     fn test_thinking_only_detection() {
-        let thinking =
-            OmnixMessage::assistant_with_thinking(None, "Let me think about this...");
+        let thinking = OmnixMessage::assistant_with_thinking(None, "Let me think about this...");
         assert!(thinking.is_thinking_only());
 
         let text = OmnixMessage::assistant_text("Hello");

@@ -19,7 +19,7 @@ use crate::outgoing_message::ConnectionRequestId;
 use crate::outgoing_message::OutgoingMessageSender;
 use crate::outgoing_message::RequestContext;
 use crate::request_processors::AccountRequestProcessor;
-use crate::request_processors::AppsRequestProcessor;
+type AppsRequestProcessor = ();
 use crate::request_processors::CatalogRequestProcessor;
 use crate::request_processors::CommandExecRequestProcessor;
 use crate::request_processors::ConfigRequestProcessor;
@@ -32,7 +32,7 @@ use crate::request_processors::GitRequestProcessor;
 use crate::request_processors::InitializeRequestProcessor;
 use crate::request_processors::MarketplaceRequestProcessor;
 use crate::request_processors::McpRequestProcessor;
-use crate::request_processors::PluginRequestProcessor;
+type PluginRequestProcessor = ();
 use crate::request_processors::ProcessExecRequestProcessor;
 use crate::request_processors::RemoteControlRequestProcessor;
 use crate::request_processors::SearchRequestProcessor;
@@ -66,7 +66,6 @@ use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::ServerRequestPayload;
 use codex_app_server_protocol::experimental_required_message;
 use codex_arg0::Arg0DispatchPaths;
-use codex_chatgpt::workspace_settings;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
 use codex_exec_server::EnvironmentManager;
@@ -396,8 +395,7 @@ impl MessageProcessor {
         let thread_watch_manager =
             crate::thread_status::ThreadWatchManager::new_with_outgoing(outgoing.clone());
         let thread_list_state_permit = Arc::new(Semaphore::new(/*permits*/ 1));
-        let workspace_settings_cache =
-            Arc::new(workspace_settings::WorkspaceSettingsCache::default());
+        let workspace_settings_cache = Arc::new(());
         let app_list_shutdown_token = CancellationToken::new();
         let account_processor = AccountRequestProcessor::new(
             auth_manager.clone(),
@@ -406,14 +404,7 @@ impl MessageProcessor {
             Arc::clone(&config),
             config_manager.clone(),
         );
-        let apps_processor = AppsRequestProcessor::new(
-            auth_manager.clone(),
-            Arc::clone(&thread_manager),
-            outgoing.clone(),
-            config_manager.clone(),
-            Arc::clone(&workspace_settings_cache),
-            app_list_shutdown_token,
-        );
+        let apps_processor = ();
         let catalog_processor = CatalogRequestProcessor::new(
             outgoing.clone(),
             Arc::clone(&skills_watcher),
@@ -461,14 +452,7 @@ impl MessageProcessor {
             outgoing.clone(),
             config_manager.clone(),
         );
-        let plugin_processor = PluginRequestProcessor::new(
-            auth_manager.clone(),
-            Arc::clone(&thread_manager),
-            outgoing.clone(),
-            analytics_events_client.clone(),
-            config_manager.clone(),
-            workspace_settings_cache,
-        );
+        let plugin_processor = ();
         let remote_control_processor = RemoteControlRequestProcessor::new(remote_control_handle);
         let search_processor = SearchRequestProcessor::new(outgoing.clone());
         let thread_goal_processor = ThreadGoalRequestProcessor::new(
@@ -512,14 +496,14 @@ impl MessageProcessor {
         );
         if matches!(plugin_startup_tasks, crate::PluginStartupTasks::Start) {
             // Keep plugin startup warmups aligned at app-server startup.
-            let on_effective_plugins_changed =
-                plugin_processor.effective_plugins_changed_callback();
+            let on_effective_plugins_changed: Option<std::sync::Arc<dyn Fn() + Send + Sync>> = None;
+            // plugin callback removed
             thread_manager
                 .plugins_manager()
                 .maybe_start_plugin_startup_tasks_for_config(
                     &config.plugins_config_input(),
                     auth_manager,
-                    Some(on_effective_plugins_changed),
+                    None::<std::sync::Arc<dyn Fn() + Send + Sync>>,
                 );
         }
         let config_processor = ConfigRequestProcessor::new(
@@ -583,7 +567,7 @@ impl MessageProcessor {
 
     pub(crate) fn clear_runtime_references(&self) {
         self.account_processor.clear_external_auth();
-        self.apps_processor.shutdown();
+        // apps_processor call removed
         self.models_refresh_worker.shutdown();
         self.skills_watcher.shutdown();
     }
@@ -1260,47 +1244,23 @@ impl MessageProcessor {
             ClientRequest::MarketplaceUpgrade { params, .. } => {
                 self.marketplace_processor.marketplace_upgrade(params).await
             }
-            ClientRequest::PluginList { params, .. } => {
-                self.plugin_processor.plugin_list(params).await
+            ClientRequest::PluginList { .. } => Err(invalid_request("plugins removed")),
+            ClientRequest::PluginInstalled { .. } => Err(invalid_request("plugins removed")),
+            ClientRequest::PluginRead { .. } => Err(invalid_request("plugins removed")),
+            ClientRequest::PluginSkillRead { .. } => Err(invalid_request("plugins removed")),
+            ClientRequest::PluginShareSave { .. } => Err(invalid_request("plugins removed")),
+            ClientRequest::PluginShareUpdateTargets { .. } => {
+                Err(invalid_request("plugins removed"))
             }
-            ClientRequest::PluginInstalled { params, .. } => {
-                self.plugin_processor.plugin_installed(params).await
-            }
-            ClientRequest::PluginRead { params, .. } => {
-                self.plugin_processor.plugin_read(params).await
-            }
-            ClientRequest::PluginSkillRead { params, .. } => {
-                self.plugin_processor.plugin_skill_read(params).await
-            }
-            ClientRequest::PluginShareSave { params, .. } => {
-                self.plugin_processor.plugin_share_save(params).await
-            }
-            ClientRequest::PluginShareUpdateTargets { params, .. } => {
-                self.plugin_processor
-                    .plugin_share_update_targets(params)
-                    .await
-            }
-            ClientRequest::PluginShareList { params, .. } => {
-                self.plugin_processor.plugin_share_list(params).await
-            }
-            ClientRequest::PluginShareCheckout { params, .. } => {
-                self.plugin_processor.plugin_share_checkout(params).await
-            }
-            ClientRequest::PluginShareDelete { params, .. } => {
-                self.plugin_processor.plugin_share_delete(params).await
-            }
-            ClientRequest::AppsList { params, .. } => {
-                self.apps_processor.apps_list(&request_id, params).await
-            }
+            ClientRequest::PluginShareList { .. } => Err(invalid_request("plugins removed")),
+            ClientRequest::PluginShareCheckout { .. } => Err(invalid_request("plugins removed")),
+            ClientRequest::PluginShareDelete { .. } => Err(invalid_request("plugins removed")),
+            ClientRequest::AppsList { .. } => Err(invalid_request("apps removed")),
             ClientRequest::SkillsConfigWrite { params, .. } => {
                 self.catalog_processor.skills_config_write(params).await
             }
-            ClientRequest::PluginInstall { params, .. } => {
-                self.plugin_processor.plugin_install(params).await
-            }
-            ClientRequest::PluginUninstall { params, .. } => {
-                self.plugin_processor.plugin_uninstall(params).await
-            }
+            ClientRequest::PluginInstall { .. } => Err(invalid_request("plugins removed")),
+            ClientRequest::PluginUninstall { .. } => Err(invalid_request("plugins removed")),
             ClientRequest::ModelList { params, .. } => {
                 self.catalog_processor.model_list(params).await
             }
@@ -1327,7 +1287,6 @@ impl MessageProcessor {
                         params,
                         app_server_client_name.clone(),
                         client_version.clone(),
-                        /*supports_openai_form_elicitation*/
                         supports_openai_form_elicitation,
                     )
                     .await
@@ -1343,33 +1302,19 @@ impl MessageProcessor {
                     .turn_interrupt(&request_id, params)
                     .await
             }
-            ClientRequest::ThreadRealtimeStart { params, .. } => {
-                self.turn_processor
-                    .thread_realtime_start(&request_id, params)
-                    .await
+            ClientRequest::ThreadRealtimeStart { .. } => Err(invalid_request("realtime removed")),
+            ClientRequest::ThreadRealtimeAppendAudio { .. } => {
+                Err(invalid_request("realtime removed"))
             }
-            ClientRequest::ThreadRealtimeAppendAudio { params, .. } => {
-                self.turn_processor
-                    .thread_realtime_append_audio(&request_id, params)
-                    .await
+            ClientRequest::ThreadRealtimeAppendText { .. } => {
+                Err(invalid_request("realtime removed"))
             }
-            ClientRequest::ThreadRealtimeAppendText { params, .. } => {
-                self.turn_processor
-                    .thread_realtime_append_text(&request_id, params)
-                    .await
+            ClientRequest::ThreadRealtimeAppendSpeech { .. } => {
+                Err(invalid_request("realtime removed"))
             }
-            ClientRequest::ThreadRealtimeAppendSpeech { params, .. } => {
-                self.turn_processor
-                    .thread_realtime_append_speech(&request_id, params)
-                    .await
-            }
-            ClientRequest::ThreadRealtimeStop { params, .. } => {
-                self.turn_processor
-                    .thread_realtime_stop(&request_id, params)
-                    .await
-            }
-            ClientRequest::ThreadRealtimeListVoices { params: _, .. } => {
-                self.turn_processor.thread_realtime_list_voices().await
+            ClientRequest::ThreadRealtimeStop { .. } => Err(invalid_request("realtime removed")),
+            ClientRequest::ThreadRealtimeListVoices { .. } => {
+                Err(invalid_request("realtime removed"))
             }
             ClientRequest::ReviewStart { params, .. } => {
                 self.turn_processor.review_start(&request_id, params).await

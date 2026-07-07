@@ -373,7 +373,6 @@ fn parse_canonical_key(canonical_key: &str) -> Option<SecretListEntry> {
 mod tests {
     use super::*;
     use codex_keyring_store::tests::MockKeyringStore;
-    use keyring::Error as KeyringError;
     use pretty_assertions::assert_eq;
 
     #[test]
@@ -403,10 +402,7 @@ mod tests {
         let codex_home = tempfile::tempdir().expect("tempdir");
         let keyring = Arc::new(MockKeyringStore::default());
         let account = compute_keyring_account(codex_home.path());
-        keyring.set_error(
-            &account,
-            KeyringError::Invalid("error".into(), "load".into()),
-        );
+        keyring.set_error(&account, std::io::Error::other("error"));
 
         let backend = LocalSecretsBackend::new(codex_home.path().to_path_buf(), keyring);
         let scope = SecretScope::Global;

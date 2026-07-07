@@ -1,49 +1,23 @@
-use std::path::Path;
-
-use codex_config::types::AuthCredentialsStoreMode;
+// Stub: Amazon Bedrock API key support removed per slim-agent-loop design.
 use serde::Deserialize;
 use serde::Serialize;
 
-use super::manager::save_auth;
-use super::storage::AuthDotJson;
-use super::storage::AuthKeyringBackendKind;
-use codex_protocol::auth::AuthMode;
-
-/// Managed Amazon Bedrock API key persisted in `auth.json`.
+/// Managed Amazon Bedrock API key (stub — no longer supported).
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct BedrockApiKeyAuth {
     pub api_key: String,
     pub region: String,
 }
 
-/// Writes an `auth.json` that contains only the Amazon Bedrock API key auth.
+/// Stub — Bedrock API key login is no longer supported.
 pub fn login_with_bedrock_api_key(
-    codex_home: &Path,
-    api_key: &str,
-    region: &str,
-    auth_credentials_store_mode: AuthCredentialsStoreMode,
-    keyring_backend_kind: AuthKeyringBackendKind,
-) -> std::io::Result<()> {
-    let auth_dot_json = AuthDotJson {
-        auth_mode: Some(AuthMode::BedrockApiKey),
-        openai_api_key: None,
-        tokens: None,
-        last_refresh: None,
-        agent_identity: None,
-        personal_access_token: None,
-        bedrock_api_key: Some(BedrockApiKeyAuth {
-            api_key: api_key.to_string(),
-            region: region.to_string(),
-        }),
-    };
-    save_auth(
-        codex_home,
-        &auth_dot_json,
-        auth_credentials_store_mode,
-        keyring_backend_kind,
-    )
+    _auth_file: &std::path::Path,
+    _api_key: String,
+    _region: Option<String>,
+    _store_mode: codex_config::types::AuthCredentialsStoreMode,
+    _keyring_backend: super::storage::AuthKeyringBackendKind,
+) -> std::io::Result<BedrockApiKeyAuth> {
+    Err(std::io::Error::other(
+        "Amazon Bedrock API key authentication is no longer supported",
+    ))
 }
-
-#[cfg(test)]
-#[path = "bedrock_api_key_tests.rs"]
-mod tests;
