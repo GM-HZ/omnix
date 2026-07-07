@@ -514,6 +514,7 @@ impl ModelClient {
         _compaction_trace: &CompactionTraceContext,
         _responses_metadata: &RequestMetadata,
     ) -> Result<Vec<ResponseItem>> {
+        tracing::warn!("compact_conversation_history: not yet implemented for ChatCompletions path");
         Ok(Vec::new())
     }
 

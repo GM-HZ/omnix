@@ -266,15 +266,27 @@ async fn flush_tool_calls(
     }
 
     if has_content || has_thinking {
-        let display_text = if has_content {
-            content.to_string()
-        } else {
-            thinking.to_string()
-        };
+        let mut content_items = Vec::new();
+        if has_thinking {
+            // Emit thinking/reasoning as a separate content item so it is not lost
+            content_items.push(ContentItem::OutputText {
+                text: format!("[thinking]\n{}\n[/thinking]", thinking),
+            });
+        }
+        if has_content {
+            content_items.push(ContentItem::OutputText {
+                text: content.to_string(),
+            });
+        } else if !has_thinking {
+            // unreachable, but safe fallback
+            content_items.push(ContentItem::OutputText {
+                text: String::new(),
+            });
+        }
         let msg_item = ResponseItem::Message {
             id: None,
             role: "assistant".to_string(),
-            content: vec![ContentItem::OutputText { text: display_text }],
+            content: content_items,
             phase: None,
             internal_chat_message_metadata_passthrough: None,
         };
