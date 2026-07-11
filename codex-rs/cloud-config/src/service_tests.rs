@@ -2,14 +2,11 @@ use super::*;
 use crate::backend::BundleClient;
 use crate::backend::BundleRequestError;
 use crate::backend::RetryableFailureKind;
-use crate::backend::bundle_from_response;
 use crate::cache::CLOUD_CONFIG_BUNDLE_CACHE_FILENAME;
 use crate::cache::CloudConfigBundleCache;
 use crate::metrics::bundle_shape_tag;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use codex_backend_client::ConfigBundleResponse;
-use codex_backend_client::DeliveredTomlFragment;
 use codex_config::AbsolutePathBuf;
 use codex_config::CloudConfigFragment;
 use codex_config::CloudConfigTomlBundle;
@@ -1019,68 +1016,4 @@ async fn refresh_from_remote_updates_cached_bundle() {
         .await
         .expect("load cache");
     assert_eq!(signed_payload.bundle, replacement_bundle);
-}
-
-#[test]
-fn bundle_response_conversion_preserves_fragment_order() {
-    let response = ConfigBundleResponse {
-        config_toml: Some(Some(Box::new(codex_backend_client::DeliveredConfigToml {
-            enterprise_managed: Some(Some(vec![
-                DeliveredTomlFragment::new(
-                    "cfg_high".to_string(),
-                    "High config".to_string(),
-                    "model = \"high\"".to_string(),
-                ),
-                DeliveredTomlFragment::new(
-                    "cfg_low".to_string(),
-                    "Low config".to_string(),
-                    "model = \"low\"".to_string(),
-                ),
-            ])),
-        }))),
-        requirements_toml: Some(Some(Box::new(
-            codex_backend_client::DeliveredRequirementsToml {
-                enterprise_managed: Some(Some(vec![DeliveredTomlFragment::new(
-                    "req_high".to_string(),
-                    "High requirements".to_string(),
-                    "allowed_approval_policies = [\"never\"]".to_string(),
-                )])),
-            },
-        ))),
-    };
-
-    assert_eq!(
-        bundle_from_response(response),
-        CloudConfigBundle {
-            config_toml: CloudConfigTomlBundle {
-                enterprise_managed: vec![
-                    CloudConfigFragment {
-                        id: "cfg_high".to_string(),
-                        name: "High config".to_string(),
-                        contents: "model = \"high\"".to_string(),
-                    },
-                    CloudConfigFragment {
-                        id: "cfg_low".to_string(),
-                        name: "Low config".to_string(),
-                        contents: "model = \"low\"".to_string(),
-                    },
-                ],
-            },
-            requirements_toml: CloudRequirementsTomlBundle {
-                enterprise_managed: vec![CloudRequirementsFragment {
-                    id: "req_high".to_string(),
-                    name: "High requirements".to_string(),
-                    contents: "allowed_approval_policies = [\"never\"]".to_string(),
-                }],
-            },
-        }
-    );
-}
-
-#[test]
-fn bundle_response_conversion_treats_missing_sections_as_empty() {
-    assert_eq!(
-        bundle_from_response(ConfigBundleResponse::new()),
-        CloudConfigBundle::default()
-    );
 }

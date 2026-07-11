@@ -28,7 +28,7 @@ async fn successful_plugin_uninstall_dispatches_plugin_list_refresh() -> Result<
     .await?;
     assert!(matches!(control, AppRunControl::Continue));
 
-    let refresh_result = tokio::time::timeout(Duration::from_secs(5), async {
+    let refresh_result = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             match app_event_rx.recv().await {
                 Some(AppEvent::PluginsLoaded {

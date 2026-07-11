@@ -72,7 +72,6 @@ use codex_features::Feature;
 use codex_features::FeaturesToml;
 use codex_model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
 use codex_model_provider_info::OLLAMA_OSS_PROVIDER_ID;
-use codex_model_provider_info::WireApi;
 use codex_models_manager::bundled_models_response;
 use codex_network_proxy::NetworkMode;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
@@ -682,126 +681,6 @@ command = "print-token"
         err.to_string()
             .contains("model_providers.corp: provider auth cannot be combined with env_key")
     );
-}
-
-#[test]
-fn rejects_provider_aws_for_custom_provider() {
-    let err = toml::from_str::<ConfigToml>(
-        r#"
-[model_providers.custom]
-name = "Custom Provider"
-
-[model_providers.custom.aws]
-profile = "codex-bedrock"
-"#,
-    )
-    .unwrap_err();
-
-    assert!(
-        err.to_string().contains(
-            "model_providers.custom: provider aws is only supported for `amazon-bedrock`"
-        )
-    );
-}
-
-#[test]
-fn accepts_amazon_bedrock_aws_profile_override() {
-    let cfg = toml::from_str::<ConfigToml>(
-        r#"
-[model_providers.amazon-bedrock.aws]
-profile = "codex-bedrock"
-region = "us-west-2"
-"#,
-    )
-    .expect("Amazon Bedrock AWS overrides should deserialize");
-
-    assert_eq!(
-        cfg.model_providers
-            .get("amazon-bedrock")
-            .and_then(|provider| provider.aws.as_ref())
-            .and_then(|aws| aws.profile.as_deref()),
-        Some("codex-bedrock")
-    );
-    assert_eq!(
-        cfg.model_providers
-            .get("amazon-bedrock")
-            .and_then(|provider| provider.aws.as_ref())
-            .and_then(|aws| aws.region.as_deref()),
-        Some("us-west-2")
-    );
-}
-
-#[tokio::test]
-async fn load_config_applies_amazon_bedrock_aws_profile_override() {
-    let cfg = toml::from_str::<ConfigToml>(
-        r#"
-model_provider = "amazon-bedrock"
-
-[model_providers.amazon-bedrock.aws]
-profile = "codex-bedrock"
-region = "us-west-2"
-"#,
-    )
-    .expect("Amazon Bedrock AWS overrides should deserialize");
-
-    let config = Config::load_from_base_config_with_overrides(
-        cfg,
-        ConfigOverrides::default(),
-        tempdir().expect("tempdir").abs(),
-    )
-    .await
-    .expect("load config");
-
-    assert_eq!(config.model_provider_id, "amazon-bedrock");
-    assert_eq!(
-        config
-            .model_provider
-            .aws
-            .as_ref()
-            .and_then(|aws| aws.profile.as_deref()),
-        Some("codex-bedrock")
-    );
-    assert_eq!(
-        config
-            .model_provider
-            .aws
-            .as_ref()
-            .and_then(|aws| aws.region.as_deref()),
-        Some("us-west-2")
-    );
-}
-
-#[tokio::test]
-async fn load_config_rejects_unsupported_amazon_bedrock_overrides() {
-    let cfg = toml::from_str::<ConfigToml>(
-        r#"
-model_provider = "amazon-bedrock"
-
-[model_providers.amazon-bedrock]
-name = "Custom Bedrock"
-base_url = "https://bedrock.example.com/v1"
-requires_openai_auth = true
-supports_websockets = true
-
-[model_providers.amazon-bedrock.aws]
-profile = "codex-bedrock"
-region = "us-west-2"
-"#,
-    )
-    .expect("Amazon Bedrock unsupported overrides should deserialize");
-
-    let err = Config::load_from_base_config_with_overrides(
-        cfg,
-        ConfigOverrides::default(),
-        tempdir().expect("tempdir").abs(),
-    )
-    .await
-    .unwrap_err();
-
-    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
-    assert!(err.to_string().contains(
-        "model_providers.amazon-bedrock only supports changing `aws.profile` and `aws.region`; other non-default provider fields are not supported"
-    ));
 }
 
 #[test]
@@ -5617,6 +5496,13 @@ async fn legacy_toggles_map_to_features() -> std::io::Result<()> {
 async fn responses_websocket_features_do_not_change_wire_api() -> std::io::Result<()> {
     for feature_key in ["responses_websockets", "responses_websockets_v2"] {
         let codex_home = TempDir::new()?;
+        let default_config = Config::load_from_base_config_with_overrides(
+            ConfigToml::default(),
+            ConfigOverrides::default(),
+            codex_home.abs(),
+        )
+        .await?;
+
         let mut entries = BTreeMap::new();
         entries.insert(feature_key.to_string(), true);
         let cfg = ConfigToml {
@@ -5631,7 +5517,10 @@ async fn responses_websocket_features_do_not_change_wire_api() -> std::io::Resul
         )
         .await?;
 
-        assert_eq!(config.model_provider.wire_api, WireApi::Responses);
+        assert_eq!(
+            config.model_provider.wire_api,
+            default_config.model_provider.wire_api
+        );
     }
 
     Ok(())

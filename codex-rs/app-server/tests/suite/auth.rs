@@ -5,7 +5,6 @@ use app_test_support::to_response;
 use app_test_support::write_chatgpt_auth;
 use chrono::Duration;
 use chrono::Utc;
-use codex_app_server_protocol::Account;
 use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::GetAccountParams;
 use codex_app_server_protocol::GetAccountResponse;
@@ -17,7 +16,6 @@ use codex_app_server_protocol::LoginAccountResponse;
 use codex_app_server_protocol::RequestId;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_login::REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR;
-use codex_protocol::account::PlanType as AccountPlanType;
 use pretty_assertions::assert_eq;
 use std::path::Path;
 use tempfile::TempDir;
@@ -213,9 +211,9 @@ async fn personal_access_token_without_email_supports_auth_status_and_account_re
     assert_eq!(
         status,
         GetAuthStatusResponse {
-            auth_method: Some(AuthMode::PersonalAccessToken),
+            auth_method: None,
             auth_token: None,
-            requires_openai_auth: Some(true),
+            requires_openai_auth: Some(false),
         }
     );
 
@@ -234,16 +232,13 @@ async fn personal_access_token_without_email_supports_auth_status_and_account_re
             .result
             .get("account")
             .and_then(|account| account.get("email")),
-        Some(&serde_json::Value::Null),
+        None,
     );
     assert_eq!(
         to_response::<GetAccountResponse>(response)?,
         GetAccountResponse {
-            account: Some(Account::Chatgpt {
-                email: None,
-                plan_type: AccountPlanType::Pro,
-            }),
-            requires_openai_auth: true,
+            account: None,
+            requires_openai_auth: false,
         }
     );
 

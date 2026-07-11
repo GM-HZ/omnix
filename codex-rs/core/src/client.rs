@@ -896,10 +896,8 @@ impl ModelClient {
         prompt: &Prompt,
         model_info: &ModelInfo,
     ) -> Result<codex_api::ChatCompletionsRequest> {
-        use codex_api::DeepSeekThinking;
         use codex_api::StreamOptions;
         use codex_protocol::OmnixMessage;
-        use codex_protocol::openai_models::ReasoningEffort;
 
         let mut messages: Vec<serde_json::Value> = Vec::new();
 
@@ -911,9 +909,25 @@ impl ModelClient {
             messages.push(val);
         }
 
-        // Convert input items to Chat Completions messages
+        // Convert input items to Chat Completions messages.
+        //
+        // Reasoning lives in internal history as a standalone
+        // `ResponseItem::Reasoning` that immediately precedes the assistant
+        // message/tool-call it belongs to. The Chat Completions wire format
+        // instead carries it as `reasoning_content` on that assistant message,
+        // and DeepSeek's thinking mode *requires* it on tool-call turns. So we
+        // hold the most recent reasoning text and attach it to the next
+        // assistant message we emit.
+        let mut pending_reasoning: Option<String> = None;
         for item in prompt.get_formatted_input_for_request(model_info.use_responses_lite) {
-            if let Some(msg_val) = response_item_to_chat_message(&item) {
+            if let ResponseItem::Reasoning { .. } = &item {
+                if let Some(text) = reasoning_item_text(&item) {
+                    pending_reasoning = Some(text);
+                }
+                continue;
+            }
+            let reasoning_for_item = pending_reasoning.take();
+            if let Some(msg_val) = response_item_to_chat_message(&item, reasoning_for_item) {
                 messages.push(msg_val);
             }
         }
@@ -936,7 +950,9 @@ impl ModelClient {
                 Some(serde_json::Value::String("auto".into()))
             },
             stream: true,
-            stream_options: Some(StreamOptions { include_usage: true }),
+            stream_options: Some(StreamOptions {
+                include_usage: true,
+            }),
             temperature: None,
             max_tokens: None,
             parallel_tool_calls: Some(prompt.parallel_tool_calls),
@@ -947,24 +963,24 @@ impl ModelClient {
         Ok(request)
     }
 
-/// Resolve DeepSeek thinking config from model reasoning defaults.
-fn deepseek_thinking_for_effort(model_info: &ModelInfo) -> Option<codex_api::DeepSeekThinking> {
-    use codex_api::DeepSeekThinking;
-    use codex_protocol::openai_models::ReasoningEffort;
-    match model_info.default_reasoning_level.as_ref()? {
-        ReasoningEffort::None | ReasoningEffort::Minimal | ReasoningEffort::Low => {
-            Some(DeepSeekThinking::Disabled)
+    /// Resolve DeepSeek thinking config from model reasoning defaults.
+    fn deepseek_thinking_for_effort(model_info: &ModelInfo) -> Option<codex_api::DeepSeekThinking> {
+        use codex_api::DeepSeekThinking;
+        use codex_protocol::openai_models::ReasoningEffort;
+        match model_info.default_reasoning_level.as_ref()? {
+            ReasoningEffort::None | ReasoningEffort::Minimal | ReasoningEffort::Low => {
+                Some(DeepSeekThinking::Disabled)
+            }
+            ReasoningEffort::Medium => Some(DeepSeekThinking::Enabled),
+            ReasoningEffort::High | ReasoningEffort::Max => {
+                Some(DeepSeekThinking::Annotated { budget: 8192 })
+            }
+            ReasoningEffort::XHigh | ReasoningEffort::Ultra => {
+                Some(DeepSeekThinking::Annotated { budget: 16384 })
+            }
+            ReasoningEffort::Custom(_) => None,
         }
-        ReasoningEffort::Medium => Some(DeepSeekThinking::Enabled),
-        ReasoningEffort::High | ReasoningEffort::Max => {
-            Some(DeepSeekThinking::Annotated { budget: 8192 })
-        }
-        ReasoningEffort::XHigh | ReasoningEffort::Ultra => {
-            Some(DeepSeekThinking::Annotated { budget: 16384 })
-        }
-        ReasoningEffort::Custom(_) => None,
     }
-}
 
     fn prepare_response_items_for_request(&self, input: &mut [ResponseItem], store: bool) {
         if self.state.item_ids_enabled || store {
@@ -1539,10 +1555,9 @@ impl ModelClientSession {
         let client_setup = self.client.current_client_setup().await?;
         let transport = ReqwestTransport::new(build_reqwest_client());
 
-        let request = self.client.build_chat_completions_request(
-            prompt,
-            model_info,
-        )?;
+        let request = self
+            .client
+            .build_chat_completions_request(prompt, model_info)?;
 
         let request_telemetry_ctx = AuthRequestTelemetryContext::new(
             client_setup.auth.as_ref().map(CodexAuth::auth_mode),
@@ -1557,15 +1572,15 @@ impl ModelClientSession {
             self.client.state.auth_env_telemetry.clone(),
         );
 
-        let client = ChatCompletionsClient::new(
-            transport,
-            client_setup.api_provider,
-            client_setup.api_auth,
-        )
-        .with_telemetry(Some(request_telemetry));
+        let client =
+            ChatCompletionsClient::new(transport, client_setup.api_provider, client_setup.api_auth)
+                .with_telemetry(Some(request_telemetry));
 
         let headers = ApiHeaderMap::new();
-        let api_stream = client.stream_request(request, headers).await.map_err(|e| self.client.state.provider.map_api_error(e))?;
+        let api_stream = client
+            .stream_request(request, headers)
+            .await
+            .map_err(|e| self.client.state.provider.map_api_error(e))?;
         let (stream, _) = map_response_stream(
             api_stream,
             session_telemetry.clone(),
@@ -1892,13 +1907,8 @@ impl ModelClientSession {
                 .await
             }
             WireApi::ChatCompletions => {
-                self.stream_chat_completions(
-                    prompt,
-                    model_info,
-                    session_telemetry,
-                    inference_trace,
-                )
-                .await
+                self.stream_chat_completions(prompt, model_info, session_telemetry, inference_trace)
+                    .await
             }
         }
     }
@@ -2198,7 +2208,6 @@ impl PendingUnauthorizedRetry {
 
 #[derive(Clone, Debug, Default)]
 struct AuthRequestTelemetryContext {
-    auth_mode: Option<&'static str>,
     auth_header_attached: bool,
     auth_header_name: Option<&'static str>,
     agent_identity_telemetry: Option<AgentIdentityTelemetry>,
@@ -2209,20 +2218,13 @@ struct AuthRequestTelemetryContext {
 
 impl AuthRequestTelemetryContext {
     fn new(
-        auth_mode: Option<AuthMode>,
+        _auth_mode: Option<AuthMode>,
         api_auth: &dyn AuthProvider,
         agent_identity_telemetry: Option<AgentIdentityTelemetry>,
         retry: PendingUnauthorizedRetry,
     ) -> Self {
         let auth_telemetry = auth_header_telemetry(api_auth);
         Self {
-            auth_mode: auth_mode.map(|mode| match mode {
-                AuthMode::ApiKey | AuthMode::BedrockApiKey => "ApiKey",
-                AuthMode::Chatgpt
-                | AuthMode::ChatgptAuthTokens
-                | AuthMode::AgentIdentity
-                | AuthMode::PersonalAccessToken => "Chatgpt",
-            }),
             auth_header_attached: auth_telemetry.attached,
             auth_header_name: auth_telemetry.name,
             agent_identity_telemetry,
@@ -2374,7 +2376,6 @@ struct ApiTelemetry {
     session_telemetry: SessionTelemetry,
     auth_context: AuthRequestTelemetryContext,
     request_route_telemetry: RequestRouteTelemetry,
-    auth_env_telemetry: AuthEnvTelemetry,
 }
 
 impl ApiTelemetry {
@@ -2382,13 +2383,12 @@ impl ApiTelemetry {
         session_telemetry: SessionTelemetry,
         auth_context: AuthRequestTelemetryContext,
         request_route_telemetry: RequestRouteTelemetry,
-        auth_env_telemetry: AuthEnvTelemetry,
+        _auth_env_telemetry: AuthEnvTelemetry,
     ) -> Self {
         Self {
             session_telemetry,
             auth_context,
             request_route_telemetry,
-            auth_env_telemetry,
         }
     }
 }
@@ -2442,10 +2442,6 @@ impl SseTelemetry for ApiTelemetry {
 impl WebsocketTelemetry for ApiTelemetry {
     fn on_ws_request(&self, duration: Duration, error: Option<&ApiError>, connection_reused: bool) {
         let error_message = error.map(telemetry_api_error_message);
-        let status = error.and_then(api_error_http_status);
-        let debug = error
-            .map(extract_response_debug_context_from_api_error)
-            .unwrap_or_default();
         self.session_telemetry.record_websocket_request(
             duration,
             error_message.as_deref(),
@@ -2467,7 +2463,10 @@ impl WebsocketTelemetry for ApiTelemetry {
 /// Convert a `ResponseItem` to a Chat Completions message JSON value.
 /// Returns `None` for items that have no Chat Completions equivalent
 /// (e.g. Compaction markers).
-fn response_item_to_chat_message(item: &ResponseItem) -> Option<serde_json::Value> {
+fn response_item_to_chat_message(
+    item: &ResponseItem,
+    reasoning: Option<String>,
+) -> Option<serde_json::Value> {
     use codex_protocol::OmnixContentPart;
     use codex_protocol::OmnixImageUrl;
     use codex_protocol::OmnixMessage;
@@ -2481,18 +2480,16 @@ fn response_item_to_chat_message(item: &ResponseItem) -> Option<serde_json::Valu
             if has_image && role == "user" {
                 let parts: Vec<OmnixContentPart> = content
                     .iter()
-                    .filter_map(|c| match c {
+                    .map(|c| match c {
                         ContentItem::InputText { text } | ContentItem::OutputText { text } => {
-                            Some(OmnixContentPart::Text { text: text.clone() })
+                            OmnixContentPart::Text { text: text.clone() }
                         }
-                        ContentItem::InputImage { image_url, .. } => {
-                            Some(OmnixContentPart::ImageUrl {
-                                image_url: OmnixImageUrl {
-                                    url: image_url.clone(),
-                                    detail: None,
-                                },
-                            })
-                        }
+                        ContentItem::InputImage { image_url, .. } => OmnixContentPart::ImageUrl {
+                            image_url: OmnixImageUrl {
+                                url: image_url.clone(),
+                                detail: None,
+                            },
+                        },
                     })
                     .collect();
                 let msg = OmnixMessage::user_parts(parts);
@@ -2511,7 +2508,15 @@ fn response_item_to_chat_message(item: &ResponseItem) -> Option<serde_json::Valu
                 let msg = match role.as_str() {
                     "system" => OmnixMessage::system(text),
                     "user" => OmnixMessage::user_text(text),
-                    "assistant" => OmnixMessage::assistant_text(text),
+                    // Reattach the reasoning that preceded this assistant turn so
+                    // DeepSeek thinking mode accepts follow-up requests. Plain
+                    // assistant text with no preceding reasoning is still emitted.
+                    "assistant" => match reasoning {
+                        Some(reasoning) => {
+                            OmnixMessage::assistant_with_thinking(Some(text), reasoning)
+                        }
+                        None => OmnixMessage::assistant_text(text),
+                    },
                     _ => return None,
                 };
                 serde_json::to_value(&msg).ok()
@@ -2524,14 +2529,19 @@ fn response_item_to_chat_message(item: &ResponseItem) -> Option<serde_json::Valu
             ..
         } => {
             use codex_protocol::OmnixToolCall;
-            let msg = OmnixMessage::assistant_tool_calls(vec![OmnixToolCall::new(
-                call_id.clone(),
-                name.clone(),
-                arguments.clone(),
-            )]);
+            let msg = OmnixMessage::assistant_tool_calls_with_thinking(
+                vec![OmnixToolCall::new(
+                    call_id.clone(),
+                    name.clone(),
+                    arguments.clone(),
+                )],
+                reasoning,
+            );
             serde_json::to_value(&msg).ok()
         }
-        ResponseItem::FunctionCallOutput { call_id, output, .. } => {
+        ResponseItem::FunctionCallOutput {
+            call_id, output, ..
+        } => {
             let content = output.body.to_text().unwrap_or_default();
             let msg = OmnixMessage::tool_result(call_id.as_str(), content);
             serde_json::to_value(&msg).ok()
@@ -2541,26 +2551,58 @@ fn response_item_to_chat_message(item: &ResponseItem) -> Option<serde_json::Valu
         } => {
             use codex_protocol::OmnixToolCall;
             let id = call_id.clone().unwrap_or_default();
-            let args = serde_json::to_string(action).map_err(|e| {
-                tracing::warn!("Failed to serialize LocalShellAction: {e}");
-                e
-            }).unwrap_or_default();
-            let msg = OmnixMessage::assistant_tool_calls(vec![OmnixToolCall::new(
-                id,
-                "shell".into(),
-                args,
-            )]);
+            let args = serde_json::to_string(action)
+                .map_err(|e| {
+                    tracing::warn!("Failed to serialize LocalShellAction: {e}");
+                    e
+                })
+                .unwrap_or_default();
+            let msg = OmnixMessage::assistant_tool_calls_with_thinking(
+                vec![OmnixToolCall::new(id, "shell".into(), args)],
+                reasoning,
+            );
             serde_json::to_value(&msg).ok()
         }
         ResponseItem::Reasoning { .. } => {
-            // Reasoning/thinking content is not sent back to Chat Completions APIs —
-            // providers don't accept reasoning in follow-up requests. This content
-            // is preserved in internal history for TUI display only.
+            // Reasoning is merged into the following assistant message by the
+            // caller (see build_chat_completions_request); it is never emitted
+            // as a standalone Chat Completions message.
             None
         }
         ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. } => None,
         _ => None,
     }
+}
+
+/// Extract the plain reasoning text from a `ResponseItem::Reasoning`, checking
+/// both the raw `content` and the `summary` representations.
+fn reasoning_item_text(item: &ResponseItem) -> Option<String> {
+    use codex_protocol::models::ReasoningItemContent;
+    use codex_protocol::models::ReasoningItemReasoningSummary;
+
+    let ResponseItem::Reasoning {
+        summary, content, ..
+    } = item
+    else {
+        return None;
+    };
+
+    let mut text = String::new();
+    if let Some(content) = content {
+        for part in content {
+            match part {
+                ReasoningItemContent::ReasoningText { text: t }
+                | ReasoningItemContent::Text { text: t } => text.push_str(t),
+            }
+        }
+    }
+    if text.is_empty() {
+        for ReasoningItemReasoningSummary::SummaryText { text: t } in summary {
+            text.push_str(t);
+        }
+    }
+
+    (!text.is_empty()).then_some(text)
 }
 
 /// Convert tool specs to Chat Completions tools format.
@@ -2588,7 +2630,17 @@ fn create_tools_json_for_chat_completions(
                     "function": {
                         "name": freeform.name,
                         "description": freeform.description,
-                        "parameters": {},
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "input": {
+                                    "type": "string",
+                                    "description": "Raw input for the freeform tool."
+                                }
+                            },
+                            "required": ["input"],
+                            "additionalProperties": false
+                        },
                     }
                 });
                 result.push(func_obj);

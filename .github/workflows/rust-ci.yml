@@ -172,6 +172,11 @@ jobs:
 
   argument_comment_lint_prebuilt:
     name: Argument comment lint - ${{ matrix.name }}
+    # Runs via Bazel + BuildBuddy on OpenAI-hosted runners. Skip entirely on
+    # forks (e.g. this one) that lack those runners and the BuildBuddy secret;
+    # the job would otherwise fail to schedule on macOS/Windows self-hosted
+    # runners or hang until timeout on Linux. Not part of the Cargo-only gate.
+    if: ${{ github.repository_owner == 'openai' }}
     runs-on: ${{ matrix.runs_on || matrix.runner }}
     timeout-minutes: ${{ matrix.timeout_minutes }}
     needs: changed
@@ -258,8 +263,14 @@ jobs:
             [[ '${{ needs.argument_comment_lint_package.result }}' == 'success' ]] || { echo 'argument_comment_lint_package failed'; exit 1; }
           fi
 
+          # The prebuilt (Bazel) lint is skipped on forks without BuildBuddy
+          # (see its job-level `if`). Accept `skipped` as non-blocking; upstream
+          # always runs it, so a real failure there still blocks.
           if [[ "${NEEDS_CHANGED_OUTPUTS_ARGUMENT_COMMENT_LINT}" == 'true' || "${NEEDS_CHANGED_OUTPUTS_WORKFLOWS}" == 'true' ]]; then
-            [[ '${{ needs.argument_comment_lint_prebuilt.result }}' == 'success' ]] || { echo 'argument_comment_lint_prebuilt failed'; exit 1; }
+            case '${{ needs.argument_comment_lint_prebuilt.result }}' in
+              success|skipped) ;;
+              *) echo 'argument_comment_lint_prebuilt failed'; exit 1 ;;
+            esac
           fi
 
           if [[ "${NEEDS_CHANGED_OUTPUTS_CODEX}" == 'true' || "${NEEDS_CHANGED_OUTPUTS_WORKFLOWS}" == 'true' ]]; then

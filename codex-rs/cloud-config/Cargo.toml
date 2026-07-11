@@ -10,7 +10,6 @@ workspace = true
 [dependencies]
 base64 = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
-codex-backend-client = { workspace = true }
 codex-config = { workspace = true }
 codex-core = { workspace = true }
 codex-login = { workspace = true }

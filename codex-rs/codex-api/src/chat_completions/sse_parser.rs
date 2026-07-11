@@ -6,8 +6,6 @@ use crate::common::ResponseStream;
 use crate::error::ApiError;
 use codex_client::ByteStream;
 use codex_client::StreamResponse;
-use codex_protocol::OmnixMessage;
-use codex_protocol::OmnixToolCall;
 use codex_protocol::protocol::TokenUsage;
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
@@ -77,9 +75,7 @@ async fn process_chat_completions_sse(
             }
             Ok(Some(Err(e))) => {
                 let _ = tx
-                    .send(Err(ApiError::Stream(format!(
-                        "SSE stream error: {e}"
-                    ))))
+                    .send(Err(ApiError::Stream(format!("SSE stream error: {e}"))))
                     .await;
                 return;
             }
@@ -123,8 +119,7 @@ async fn process_chat_completions_sse(
 
             // Ensure OutputItemAdded is emitted before any delta event so the
             // turn loop has an "active item" to attach deltas to.
-            if !item_added_emitted
-                && (delta.content.is_some() || delta.reasoning_content.is_some())
+            if !item_added_emitted && (delta.content.is_some() || delta.reasoning_content.is_some())
             {
                 use codex_protocol::models::ResponseItem;
                 let placeholder = ResponseItem::Message {
@@ -134,14 +129,18 @@ async fn process_chat_completions_sse(
                     phase: None,
                     internal_chat_message_metadata_passthrough: None,
                 };
-                let _ = tx.send(Ok(ResponseEvent::OutputItemAdded(placeholder))).await;
+                let _ = tx
+                    .send(Ok(ResponseEvent::OutputItemAdded(placeholder)))
+                    .await;
                 item_added_emitted = true;
             }
 
             // Content text delta
             if let Some(ref text) = delta.content {
                 content_acc.push_str(text);
-                let _ = tx.send(Ok(ResponseEvent::OutputTextDelta(text.clone()))).await;
+                let _ = tx
+                    .send(Ok(ResponseEvent::OutputTextDelta(text.clone())))
+                    .await;
             }
 
             // Reasoning/thinking delta (DeepSeek-R1 style)
@@ -166,25 +165,15 @@ async fn process_chat_completions_sse(
             if let Some(ref reason) = choice.finish_reason {
                 match reason.as_str() {
                     "tool_calls" => {
-                        flush_tool_calls(
-                            &mut tool_slots,
-                            &content_acc,
-                            &thinking_acc,
-                            &tx,
-                        )
-                        .await;
+                        flush_tool_calls(&mut tool_slots, &content_acc, &thinking_acc, &tx).await;
                         content_acc.clear();
                         thinking_acc.clear();
                     }
                     "stop" | "length" => {
-                        flush_text_response(
-                            &response_id,
-                            &content_acc,
-                            &thinking_acc,
-                            &usage,
-                            &tx,
-                        )
-                        .await;
+                        flush_text_response(&response_id, &content_acc, &thinking_acc, &usage, &tx)
+                            .await;
+                        content_acc.clear();
+                        thinking_acc.clear();
                     }
                     _ => {}
                 }
@@ -194,14 +183,7 @@ async fn process_chat_completions_sse(
 
     // End of stream — flush any remaining content
     if !content_acc.is_empty() || !thinking_acc.is_empty() {
-        flush_text_response(
-            &response_id,
-            &content_acc,
-            &thinking_acc,
-            &usage,
-            &tx,
-        )
-        .await;
+        flush_text_response(&response_id, &content_acc, &thinking_acc, &usage, &tx).await;
     }
 
     // Emit final usage
@@ -251,33 +233,27 @@ async fn flush_tool_calls(
     let has_content = !content.is_empty();
     let has_thinking = !thinking.is_empty();
 
-    let mut omnix_tool_calls: Vec<OmnixToolCall> = Vec::new();
+    if has_thinking {
+        emit_reasoning_item(thinking, tx).await;
+    }
+    if has_content {
+        emit_assistant_message_item(content, tx).await;
+    }
+
     for slot in tool_slots.drain(..) {
         if slot.id.is_empty() {
             continue;
         }
-        omnix_tool_calls.push(OmnixToolCall::new(
-            slot.id,
-            slot.name,
-            slot.arguments,
-        ));
-    }
-
-    if has_content || has_thinking {
-        let msg = if has_content {
-            OmnixMessage::assistant_with_thinking(
-                Some(content.to_string()),
-                thinking.to_string(),
-            )
-        } else {
-            OmnixMessage::assistant_with_thinking(None, thinking.to_string())
+        use codex_protocol::models::ResponseItem;
+        let item = ResponseItem::FunctionCall {
+            id: None,
+            name: slot.name,
+            namespace: None,
+            arguments: slot.arguments,
+            call_id: slot.id,
+            internal_chat_message_metadata_passthrough: None,
         };
-        let _ = tx.send(Ok(ResponseEvent::ChatOutputItemDone(msg))).await;
-    }
-
-    if !omnix_tool_calls.is_empty() {
-        let msg = OmnixMessage::assistant_tool_calls(omnix_tool_calls);
-        let _ = tx.send(Ok(ResponseEvent::ChatOutputItemDone(msg))).await;
+        let _ = tx.send(Ok(ResponseEvent::OutputItemDone(item))).await;
     }
 }
 
@@ -292,14 +268,218 @@ async fn flush_text_response(
         return;
     }
 
-    let msg = if !content.is_empty() {
-        OmnixMessage::assistant_with_thinking(
-            Some(content.to_string()),
-            thinking.to_string(),
-        )
-    } else {
-        OmnixMessage::assistant_with_thinking(None, thinking.to_string())
-    };
+    if !thinking.is_empty() {
+        emit_reasoning_item(thinking, tx).await;
+    }
+    if !content.is_empty() {
+        emit_assistant_message_item(content, tx).await;
+    }
+}
 
-    let _ = tx.send(Ok(ResponseEvent::ChatOutputItemDone(msg))).await;
+/// Emit a completed assistant text message as a standard `OutputItemDone` so
+/// the core turn loop lands and renders it the same way it does for the
+/// Responses API.
+async fn emit_assistant_message_item(
+    content: &str,
+    tx: &mpsc::Sender<Result<ResponseEvent, ApiError>>,
+) {
+    use codex_protocol::models::ContentItem;
+    use codex_protocol::models::ResponseItem;
+
+    let item = ResponseItem::Message {
+        id: None,
+        role: "assistant".to_string(),
+        content: vec![ContentItem::OutputText {
+            text: content.to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let _ = tx.send(Ok(ResponseEvent::OutputItemDone(item))).await;
+}
+
+/// Emit accumulated reasoning/thinking as a standard `Reasoning` item.
+async fn emit_reasoning_item(thinking: &str, tx: &mpsc::Sender<Result<ResponseEvent, ApiError>>) {
+    use codex_protocol::models::ReasoningItemContent;
+    use codex_protocol::models::ResponseItem;
+
+    let item = ResponseItem::Reasoning {
+        id: None,
+        summary: Vec::new(),
+        content: Some(vec![ReasoningItemContent::ReasoningText {
+            text: thinking.to_string(),
+        }]),
+        encrypted_content: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let _ = tx.send(Ok(ResponseEvent::OutputItemDone(item))).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use assert_matches::assert_matches;
+    use codex_client::TransportError;
+    use codex_protocol::models::ContentItem;
+    use codex_protocol::models::ReasoningItemContent;
+    use codex_protocol::models::ResponseItem;
+    use futures::TryStreamExt;
+    use tokio::sync::mpsc;
+    use tokio_test::io::Builder as IoBuilder;
+    use tokio_util::io::ReaderStream;
+
+    /// Feed raw SSE bytes through the Chat Completions parser and collect the
+    /// emitted events, mirroring the real streaming path.
+    async fn collect_events(chunks: &[&str]) -> Vec<Result<ResponseEvent, ApiError>> {
+        let mut builder = IoBuilder::new();
+        for chunk in chunks {
+            builder.read(chunk.as_bytes());
+        }
+        let reader = builder.build();
+        let stream =
+            ReaderStream::new(reader).map_err(|err| TransportError::Network(err.to_string()));
+        let (tx, mut rx) = mpsc::channel::<Result<ResponseEvent, ApiError>>(64);
+        tokio::spawn(process_chat_completions_sse(
+            Box::pin(stream),
+            tx,
+            Duration::from_secs(5),
+        ));
+
+        let mut events = Vec::new();
+        while let Some(ev) = rx.recv().await {
+            events.push(ev);
+        }
+        events
+    }
+
+    fn ok_events(events: Vec<Result<ResponseEvent, ApiError>>) -> Vec<ResponseEvent> {
+        events
+            .into_iter()
+            .map(|ev| ev.expect("parser emitted an error event"))
+            .collect()
+    }
+
+    fn output_item_dones(events: &[ResponseEvent]) -> Vec<&ResponseItem> {
+        events
+            .iter()
+            .filter_map(|ev| match ev {
+                ResponseEvent::OutputItemDone(item) => Some(item),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Regression: an assistant text reply must be emitted exactly once as a
+    /// standard `OutputItemDone(Message)`. Previously the parser emitted a
+    /// `ChatOutputItemDone(OmnixMessage)` that the core turn loop ignored, so
+    /// replies vanished; and the stop-flush plus end-of-stream flush could
+    /// duplicate the message once it did land.
+    #[tokio::test]
+    async fn text_reply_emits_single_assistant_message_item() {
+        let events = ok_events(
+            collect_events(&[
+                "data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hi\"},\"finish_reason\":null}]}\n\n",
+                "data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"!\"},\"finish_reason\":null}]}\n\n",
+                "data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2,\"total_tokens\":7}}\n\n",
+                "data: [DONE]\n\n",
+            ])
+            .await,
+        );
+
+        let items = output_item_dones(&events);
+        assert_eq!(
+            items.len(),
+            1,
+            "expected exactly one OutputItemDone, got: {events:?}"
+        );
+        assert_matches!(
+            items[0],
+            ResponseItem::Message { role, content, .. }
+                if role == "assistant"
+                    && content
+                        == &vec![ContentItem::OutputText {
+                            text: "Hi!".to_string(),
+                        }]
+        );
+
+        // A streaming placeholder must open the item before deltas so the turn
+        // loop has an active item to attach text to.
+        assert!(
+            events
+                .iter()
+                .any(|ev| matches!(ev, ResponseEvent::OutputItemAdded(_))),
+            "expected an OutputItemAdded placeholder"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|ev| matches!(ev, ResponseEvent::Completed { .. })),
+            "expected a Completed event"
+        );
+    }
+
+    /// Reasoning models (e.g. deepseek-v4-flash) stream `reasoning_content`
+    /// separately from `content`. Both must land: a `Reasoning` item followed
+    /// by the assistant `Message`.
+    #[tokio::test]
+    async fn reasoning_then_text_emits_reasoning_and_message_items() {
+        let events = ok_events(
+            collect_events(&[
+                "data: {\"id\":\"c2\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"reasoning_content\":\"Think\"},\"finish_reason\":null}]}\n\n",
+                "data: {\"id\":\"c2\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Answer\"},\"finish_reason\":null}]}\n\n",
+                "data: {\"id\":\"c2\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n",
+                "data: [DONE]\n\n",
+            ])
+            .await,
+        );
+
+        let items = output_item_dones(&events);
+        assert_eq!(
+            items.len(),
+            2,
+            "expected reasoning + message, got: {events:?}"
+        );
+        assert_matches!(
+            items[0],
+            ResponseItem::Reasoning { content: Some(c), .. }
+                if c == &vec![ReasoningItemContent::ReasoningText {
+                    text: "Think".to_string(),
+                }]
+        );
+        assert_matches!(
+            items[1],
+            ResponseItem::Message { role, content, .. }
+                if role == "assistant"
+                    && content == &vec![ContentItem::OutputText { text: "Answer".to_string() }]
+        );
+    }
+
+    /// A streamed tool call must land as a standard `OutputItemDone(FunctionCall)`
+    /// with the accumulated id/name/arguments.
+    #[tokio::test]
+    async fn tool_call_emits_function_call_item() {
+        let events = ok_events(
+            collect_events(&[
+                "data: {\"id\":\"c3\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"shell\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\n",
+                "data: {\"id\":\"c3\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"command\\\":[\\\"ls\\\"]}\"}}]},\"finish_reason\":null}]}\n\n",
+                "data: {\"id\":\"c3\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n",
+                "data: [DONE]\n\n",
+            ])
+            .await,
+        );
+
+        let items = output_item_dones(&events);
+        assert_eq!(
+            items.len(),
+            1,
+            "expected one function call, got: {events:?}"
+        );
+        assert_matches!(
+            items[0],
+            ResponseItem::FunctionCall { name, arguments, call_id, .. }
+                if name == "shell"
+                    && call_id == "call_1"
+                    && arguments == "{\"command\":[\"ls\"]}"
+        );
+    }
 }

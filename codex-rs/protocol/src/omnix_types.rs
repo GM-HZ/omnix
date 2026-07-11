@@ -115,9 +115,17 @@ pub enum OmnixMessage {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         tool_calls: Vec<OmnixToolCall>,
         /// Thinking/reasoning text from models like DeepSeek-R1 or Qwen3.
-        /// Stored for display but NOT re-sent to the model in follow-up
-        /// requests.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ///
+        /// Serialized as `reasoning_content` to match the Chat Completions
+        /// wire field. DeepSeek's thinking mode requires the reasoning that
+        /// preceded a tool call to be passed back on the assistant message
+        /// that carries those `tool_calls`, otherwise the follow-up request
+        /// is rejected with `invalid_request_error`.
+        #[serde(
+            default,
+            rename = "reasoning_content",
+            skip_serializing_if = "Option::is_none"
+        )]
         thinking: Option<String>,
     },
     Tool {
@@ -166,6 +174,21 @@ impl OmnixMessage {
             content: None,
             tool_calls,
             thinking: None,
+        }
+    }
+
+    /// Assistant message carrying tool calls plus the reasoning that preceded
+    /// them. DeepSeek's thinking mode rejects tool-call turns whose
+    /// `reasoning_content` is not passed back, so the agentic loop must
+    /// reattach it here.
+    pub fn assistant_tool_calls_with_thinking(
+        tool_calls: Vec<OmnixToolCall>,
+        thinking: Option<String>,
+    ) -> Self {
+        Self::Assistant {
+            content: None,
+            tool_calls,
+            thinking,
         }
     }
 
@@ -248,7 +271,7 @@ mod tests {
         assert_eq!(json["role"], "assistant");
         assert_eq!(json["content"], "Hello there!");
         assert!(json.get("tool_calls").is_none());
-        assert!(json.get("thinking").is_none());
+        assert!(json.get("reasoning_content").is_none());
     }
 
     #[test]
@@ -282,13 +305,29 @@ mod tests {
         let json = serde_json::to_value(&msg).unwrap();
         assert_eq!(json["role"], "assistant");
         assert_eq!(json["content"], "The answer is 4.");
-        assert_eq!(json["thinking"], "2+2=4...");
+        assert_eq!(json["reasoning_content"], "2+2=4...");
+    }
+
+    #[test]
+    fn test_assistant_tool_calls_with_thinking_serialization() {
+        let msg = OmnixMessage::assistant_tool_calls_with_thinking(
+            vec![OmnixToolCall::new(
+                "call_1".into(),
+                "shell".into(),
+                r#"{"command":["ls"]}"#.into(),
+            )],
+            Some("I should list the files.".into()),
+        );
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["role"], "assistant");
+        assert_eq!(json["tool_calls"][0]["id"], "call_1");
+        // DeepSeek thinking mode requires the reasoning on the tool-call turn.
+        assert_eq!(json["reasoning_content"], "I should list the files.");
     }
 
     #[test]
     fn test_thinking_only_detection() {
-        let thinking =
-            OmnixMessage::assistant_with_thinking(None, "Let me think about this...");
+        let thinking = OmnixMessage::assistant_with_thinking(None, "Let me think about this...");
         assert!(thinking.is_thinking_only());
 
         let text = OmnixMessage::assistant_text("Hello");

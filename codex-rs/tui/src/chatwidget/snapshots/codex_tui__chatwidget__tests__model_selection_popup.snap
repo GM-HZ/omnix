@@ -13,5 +13,11 @@ expression: popup
   4. gpt-5.3-codex      Coding-optimized model.
 › 5. gpt-5.2 (current)  Optimized for professional work and long-running
                         agents.
+  6. deepseek-v4-flash  DeepSeek V4 Flash — fast general-purpose model with
+                        optional thinking. 1M context.
+  7. deepseek-v4-pro    DeepSeek V4 Pro — higher-performance tier with
+                        optional thinking. 1M context.
+  8. deepseek-chat      Legacy alias for DeepSeek V3. Use deepseek-v4-flash
+                        for latest model.
 
   Press enter to confirm or esc to go back

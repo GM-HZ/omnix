@@ -7,7 +7,7 @@ use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_mcp::ToolInfo;
 use codex_model_provider::create_model_provider;
-use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
+use codex_model_provider_info::DEEPSEEK_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
@@ -266,10 +266,10 @@ fn use_chatgpt_auth(turn: &mut TurnContext) {
     );
 }
 
-fn use_bedrock_provider(turn: &mut TurnContext) {
-    let provider_info = ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None);
+fn use_deepseek_provider(turn: &mut TurnContext) {
+    let provider_info = ModelProviderInfo::create_deepseek_provider();
     update_config(turn, |config| {
-        config.model_provider_id = AMAZON_BEDROCK_PROVIDER_ID.to_string();
+        config.model_provider_id = DEEPSEEK_PROVIDER_ID.to_string();
         config.model_provider = provider_info.clone();
     });
     turn.provider = create_model_provider(provider_info, turn.auth_manager.clone());
@@ -798,10 +798,10 @@ async fn mcp_and_tool_search_follow_direct_and_deferred_tool_exposure() {
         "read_mcp_resource",
     ]);
 
-    let bedrock_namespace_capability = probe_with(
+    let deepseek_namespace_capability = probe_with(
         |turn| {
             turn.model_info.supports_search_tool = true;
-            use_bedrock_provider(turn);
+            use_deepseek_provider(turn);
         },
         ToolPlanInputs {
             deferred_mcp_tools: searchable_mcp.deferred_mcp_tools.clone(),
@@ -809,7 +809,7 @@ async fn mcp_and_tool_search_follow_direct_and_deferred_tool_exposure() {
         },
     )
     .await;
-    bedrock_namespace_capability.assert_visible_contains(&["tool_search"]);
+    deepseek_namespace_capability.assert_visible_contains(&["tool_search"]);
 
     let enabled = probe_with(
         |turn| {
@@ -1449,13 +1449,13 @@ async fn multi_agent_v2_can_use_configured_tool_namespace() {
 }
 
 #[tokio::test]
-async fn multi_agent_v2_namespace_is_supported_by_bedrock_provider() {
+async fn multi_agent_v2_namespace_is_supported_by_deepseek_provider() {
     let plan = probe(|turn| {
         set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
         update_config(turn, |config| {
             config.multi_agent_v2.tool_namespace = Some("agents".to_string());
         });
-        use_bedrock_provider(turn);
+        use_deepseek_provider(turn);
     })
     .await;
 
@@ -1575,7 +1575,7 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
 
     let unsupported_image_generation_provider = probe(|turn| {
         set_feature(turn, Feature::ImageGeneration, /*enabled*/ true);
-        use_bedrock_provider(turn);
+        use_deepseek_provider(turn);
         use_actor_authorized_provider(turn);
         turn.model_info.input_modalities = vec![InputModality::Image];
     })
@@ -1661,7 +1661,7 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
 
     let unsupported_provider = probe(|turn| {
         set_web_search_mode(turn, WebSearchMode::Live);
-        use_bedrock_provider(turn);
+        use_deepseek_provider(turn);
     })
     .await;
     unsupported_provider.assert_visible_lacks(&["web_search"]);

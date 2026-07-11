@@ -17,9 +17,6 @@ use crate::test_support::PathBufExt;
 use crate::test_support::test_path_buf;
 use crate::token_usage::TokenUsage;
 use crate::token_usage::TokenUsageInfo;
-use app_test_support::ChatGptAuthFixture;
-use app_test_support::write_chatgpt_auth;
-use app_test_support::write_models_cache;
 use chrono::Duration as ChronoDuration;
 use chrono::Local;
 use chrono::TimeZone;
@@ -30,9 +27,6 @@ use codex_app_server_protocol::RateLimitSnapshot;
 use codex_app_server_protocol::RateLimitWindow;
 use codex_app_server_protocol::SpendControlLimitSnapshot;
 use codex_config::LoaderOverrides;
-use codex_config::types::AuthCredentialsStoreMode;
-use codex_model_provider_info::ModelProviderAwsAuthInfo;
-use codex_model_provider_info::ModelProviderInfo;
 use codex_models_manager::test_support::construct_model_info_offline_for_tests;
 use codex_models_manager::test_support::get_model_offline_for_tests;
 use codex_protocol::ThreadId;
@@ -319,67 +313,6 @@ async fn status_snapshot_includes_reasoning_details() {
         }
     }
     let sanitized = sanitize_directory(rendered_lines).join("\n");
-    assert_snapshot!(sanitized);
-}
-
-#[tokio::test]
-async fn status_snapshot_shows_chatgpt_plan_without_email() {
-    let temp_home = TempDir::new().expect("temp home");
-    write_models_cache(temp_home.path()).expect("write models cache");
-    let mut config = test_config(&temp_home).await;
-    config.model = Some("gpt-5.1-codex-max".to_string());
-    config.model_provider_id = "openai".to_string();
-    config.cli_auth_credentials_store_mode = AuthCredentialsStoreMode::File;
-    set_workspace_cwd(&mut config, test_path_buf("/workspace/tests").abs());
-
-    write_chatgpt_auth(
-        temp_home.path(),
-        ChatGptAuthFixture::new("access-chatgpt").plan_type("enterprise"),
-        AuthCredentialsStoreMode::File,
-    )
-    .expect("write email-less ChatGPT auth");
-    let mut app_server = crate::start_embedded_app_server_for_picker(&config)
-        .await
-        .expect("start embedded app server");
-    let bootstrap = app_server
-        .bootstrap(&config)
-        .await
-        .expect("bootstrap app server session");
-    app_server.shutdown().await.expect("shut down app server");
-    let account_display = bootstrap
-        .status_account_display
-        .expect("bootstrap should return ChatGPT account display");
-    assert_eq!(
-        account_display,
-        StatusAccountDisplay::ChatGpt {
-            email: None,
-            plan: Some("Enterprise".to_string()),
-        }
-    );
-    let usage = TokenUsage::default();
-    let captured_at = chrono::Local
-        .with_ymd_and_hms(2024, 1, 2, 3, 4, 5)
-        .single()
-        .expect("timestamp");
-    let model_slug = get_model_offline_for_tests(config.model.as_deref());
-
-    let composite = new_status_output(
-        &config,
-        Some(&account_display),
-        /*token_info*/ None,
-        &usage,
-        &None,
-        /*thread_name*/ None,
-        /*forked_from*/ None,
-        /*rate_limits*/ None,
-        None,
-        captured_at,
-        &model_slug,
-        /*collaboration_mode*/ None,
-        /*reasoning_effort_override*/ None,
-    );
-    let sanitized =
-        sanitize_directory(render_lines(&composite.display_lines(/*width*/ 80))).join("\n");
     assert_snapshot!(sanitized);
 }
 
@@ -696,113 +629,6 @@ async fn status_snapshot_shows_active_user_defined_profile() {
     }
     let sanitized = sanitize_directory(rendered_lines).join("\n");
     assert_snapshot!(sanitized);
-}
-
-#[tokio::test]
-async fn status_model_provider_uses_bedrock_runtime_base_url_and_gates_usage_link() {
-    let temp_home = TempDir::new().expect("temp home");
-    let mut config = test_config(&temp_home).await;
-    config.model_provider_id = "amazon-bedrock".to_string();
-    config.model_provider =
-        ModelProviderInfo::create_amazon_bedrock_provider(Some(ModelProviderAwsAuthInfo {
-            profile: None,
-            region: Some("eu-west-1".to_string()),
-        }));
-    config.model_provider.base_url =
-        Some("https://bedrock-mantle.us-east-1.api.aws/openai/v1".to_string());
-    let usage = TokenUsage::default();
-    let captured_at = chrono::Local
-        .with_ymd_and_hms(2024, 1, 2, 3, 4, 5)
-        .single()
-        .expect("timestamp");
-    let model_slug = get_model_offline_for_tests(config.model.as_deref());
-    let runtime_base_url = "https://bedrock-mantle.eu-west-1.api.aws/openai/v1";
-
-    let (composite, _handle) = new_status_output_with_rate_limits_handle(
-        &config,
-        Some(runtime_base_url),
-        /*remote_connection*/ None,
-        test_status_account_display().as_ref(),
-        /*token_info*/ None,
-        &usage,
-        &None,
-        /*thread_name*/ None,
-        /*forked_from*/ None,
-        /*rate_limits*/ &[],
-        None,
-        captured_at,
-        &model_slug,
-        /*collaboration_mode*/ None,
-        /*reasoning_effort_override*/ None,
-        "<none>".to_string(),
-        /*refreshing_rate_limits*/ false,
-    );
-    let rendered = render_lines(&composite.display_lines(/*width*/ 120)).join("\n");
-
-    assert!(
-        rendered.contains(&format!("Amazon Bedrock - {runtime_base_url}")),
-        "expected /status to render runtime Bedrock URL, got: {rendered}"
-    );
-    assert!(
-        !rendered.contains("bedrock-mantle.us-east-1"),
-        "expected /status to ignore configured Bedrock base URL, got: {rendered}"
-    );
-    assert!(
-        !rendered.contains("https://chatgpt.com/codex/settings/usage"),
-        "expected /status to hide ChatGPT usage link for Bedrock, got: {rendered}"
-    );
-
-    config.model_provider_id = "openai-proxy".to_string();
-    config.model_provider = ModelProviderInfo {
-        name: "OpenAI Proxy".to_string(),
-        base_url: Some("https://openai-proxy.example/v1".to_string()),
-        requires_openai_auth: true,
-        ..ModelProviderInfo::default()
-    };
-    let (composite, _handle) = new_status_output_with_rate_limits_handle(
-        &config,
-        /*runtime_model_provider_base_url*/ None,
-        /*remote_connection*/ None,
-        test_status_account_display().as_ref(),
-        /*token_info*/ None,
-        &usage,
-        &None,
-        /*thread_name*/ None,
-        /*forked_from*/ None,
-        /*rate_limits*/ &[],
-        None,
-        captured_at,
-        &model_slug,
-        /*collaboration_mode*/ None,
-        /*reasoning_effort_override*/ None,
-        "<none>".to_string(),
-        /*refreshing_rate_limits*/ false,
-    );
-    let rendered = render_lines(&composite.display_lines(/*width*/ 120)).join("\n");
-
-    assert!(
-        rendered.contains("https://chatgpt.com/codex/settings/usage"),
-        "expected /status to show ChatGPT usage link for OpenAI-auth proxy, got: {rendered}"
-    );
-
-    let wide_destinations: Vec<String> = composite
-        .display_hyperlink_lines(/*width*/ 120)
-        .into_iter()
-        .flat_map(|line| line.hyperlinks.into_iter())
-        .map(|link| link.destination)
-        .collect();
-    assert_eq!(
-        wide_destinations,
-        vec!["https://chatgpt.com/codex/settings/usage"]
-    );
-
-    let narrow_destinations: Vec<String> = composite
-        .display_hyperlink_lines(/*width*/ 24)
-        .into_iter()
-        .flat_map(|line| line.hyperlinks.into_iter())
-        .map(|link| link.destination)
-        .collect();
-    assert_eq!(narrow_destinations, Vec::<String>::new());
 }
 
 #[tokio::test]

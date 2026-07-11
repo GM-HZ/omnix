@@ -6,7 +6,6 @@ pub(crate) struct AppsRequestProcessor {
     thread_manager: Arc<ThreadManager>,
     outgoing: Arc<OutgoingMessageSender>,
     config_manager: ConfigManager,
-    workspace_settings_cache: Arc<workspace_settings::WorkspaceSettingsCache>,
     shutdown_token: CancellationToken,
     _shutdown_drop_guard: DropGuard,
 }
@@ -17,7 +16,6 @@ impl AppsRequestProcessor {
         thread_manager: Arc<ThreadManager>,
         outgoing: Arc<OutgoingMessageSender>,
         config_manager: ConfigManager,
-        workspace_settings_cache: Arc<workspace_settings::WorkspaceSettingsCache>,
         shutdown_token: CancellationToken,
     ) -> Self {
         let shutdown_drop_guard = shutdown_token.clone().drop_guard();
@@ -26,7 +24,6 @@ impl AppsRequestProcessor {
             thread_manager,
             outgoing,
             config_manager,
-            workspace_settings_cache,
             shutdown_token,
             _shutdown_drop_guard: shutdown_drop_guard,
         }
@@ -341,24 +338,10 @@ impl AppsRequestProcessor {
 
     async fn workspace_codex_plugins_enabled(
         &self,
-        config: &Config,
-        auth: Option<&CodexAuth>,
+        _config: &Config,
+        _auth: Option<&CodexAuth>,
     ) -> bool {
-        match workspace_settings::codex_plugins_enabled_for_workspace(
-            config,
-            auth,
-            Some(&self.workspace_settings_cache),
-        )
-        .await
-        {
-            Ok(enabled) => enabled,
-            Err(err) => {
-                warn!(
-                    "failed to fetch workspace Codex plugins setting; allowing Codex plugins: {err:#}"
-                );
-                true
-            }
-        }
+        true
     }
 }
 

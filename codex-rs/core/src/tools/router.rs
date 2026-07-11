@@ -120,6 +120,29 @@ impl ToolRouter {
                 ..
             } => {
                 let tool_name = ToolName::new(namespace, name);
+                if tool_name.name == "apply_patch" {
+                    let arguments_value = serde_json::from_str::<serde_json::Value>(&arguments)
+                        .map_err(|err| {
+                            FunctionCallError::RespondToModel(format!(
+                                "failed to parse apply_patch arguments: {err}"
+                            ))
+                        })?;
+                    let Some(input) = arguments_value
+                        .get("input")
+                        .and_then(|value| value.as_str())
+                    else {
+                        return Err(FunctionCallError::RespondToModel(
+                            "apply_patch arguments must include string field `input`".to_string(),
+                        ));
+                    };
+                    return Ok(Some(ToolCall {
+                        tool_name,
+                        call_id,
+                        payload: ToolPayload::Custom {
+                            input: input.to_string(),
+                        },
+                    }));
+                }
                 Ok(Some(ToolCall {
                     tool_name,
                     call_id,

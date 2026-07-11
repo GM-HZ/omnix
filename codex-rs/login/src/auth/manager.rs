@@ -982,8 +982,23 @@ fn ensure_personal_access_token_workspace_allowed(
     expected_workspace_ids: Option<&[String]>,
     auth: &PersonalAccessTokenAuth,
 ) -> std::io::Result<()> {
-    crate::server::ensure_workspace_account_allowed(expected_workspace_ids, auth.account_id())
-        .map_err(|message| std::io::Error::new(std::io::ErrorKind::PermissionDenied, message))
+    let Some(expected_workspace_ids) = expected_workspace_ids else {
+        return Ok(());
+    };
+    if expected_workspace_ids
+        .iter()
+        .any(|workspace_id| workspace_id == auth.account_id())
+    {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "Login is restricted to workspace id(s) {}.",
+                expected_workspace_ids.join(", ")
+            ),
+        ))
+    }
 }
 
 /// Writes an in-memory auth payload for externally managed ChatGPT tokens.

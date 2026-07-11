@@ -22,7 +22,6 @@ use codex_app_server_protocol::McpServerStatus;
 use codex_app_server_protocol::McpServerStatusDetail;
 use codex_app_server_protocol::PluginInstallResponse;
 use codex_app_server_protocol::PluginListResponse;
-use codex_app_server_protocol::PluginMarketplaceEntry;
 use codex_app_server_protocol::PluginReadParams;
 use codex_app_server_protocol::PluginReadResponse;
 use codex_app_server_protocol::PluginUninstallResponse;
@@ -465,13 +464,6 @@ pub(crate) enum AppEvent {
     OpenPluginsList {
         cwd: PathBuf,
         response: PluginListResponse,
-    },
-
-    /// Result of explicitly fetching remote-backed plugin sections.
-    PluginRemoteSectionsLoaded {
-        cwd: PathBuf,
-        marketplaces: Vec<PluginMarketplaceEntry>,
-        section_errors: Vec<PluginRemoteSectionError>,
     },
 
     /// Result of fetching lifecycle hook inventory.

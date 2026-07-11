@@ -114,8 +114,11 @@ pub enum ResponseEvent {
     },
     RateLimits(RateLimitSnapshot),
     ModelsEtag(String),
-    /// Chat Completions output item — carries an `OmnixMessage` instead of
-    /// a `ResponseItem`. Used by the Chat Completions SSE parser.
+    /// Deprecated Chat Completions output item carrying an `OmnixMessage`
+    /// instead of a `ResponseItem`. No longer emitted: the Chat Completions
+    /// SSE parser now emits standard `OutputItemDone(ResponseItem::…)` events
+    /// so the core turn loop lands and renders replies the same way it does
+    /// for the Responses API. Retained only for wire/enum compatibility.
     ChatOutputItemDone(OmnixMessage),
 }
 

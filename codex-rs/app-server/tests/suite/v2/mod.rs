@@ -43,13 +43,11 @@ mod plan_item;
 mod plugin_install;
 mod plugin_list;
 mod plugin_read;
-mod plugin_share;
 mod plugin_uninstall;
 mod process_exec;
 mod rate_limit_reset_credits;
 mod rate_limits;
 mod realtime_conversation;
-mod recommended_plugins;
 mod remote_control;
 #[cfg(debug_assertions)]
 mod remote_thread_store;

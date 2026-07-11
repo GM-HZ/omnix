@@ -34,7 +34,6 @@ use codex_features::Feature;
 use codex_home::CodexHomeUserInstructionsProvider;
 use codex_login::CodexAuth;
 use codex_model_provider_info::ModelProviderInfo;
-use codex_model_provider_info::built_in_model_providers;
 use codex_models_manager::bundled_models_response;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ModelInfo;
@@ -692,13 +691,11 @@ impl TestCodexBuilder {
         home: &TempDir,
         cwd_override: AbsolutePathBuf,
     ) -> anyhow::Result<(Config, Arc<TempDir>)> {
-        let model_provider = ModelProviderInfo {
-            base_url: Some(base_url),
-            // Most core tests use SSE-only mock servers, so keep websocket transport off unless
-            // a test explicitly opts into websocket coverage.
-            supports_websockets: false,
-            ..built_in_model_providers(/*openai_base_url*/ None)["openai"].clone()
-        };
+        let mut model_provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
+        model_provider.base_url = Some(base_url);
+        // Most core tests use SSE-only mock servers, so keep websocket transport off unless
+        // a test explicitly opts into websocket coverage.
+        model_provider.supports_websockets = false;
         let cwd = Arc::new(TempDir::new()?);
         for hook in self.pre_build_hooks.drain(..) {
             hook(home.path());
