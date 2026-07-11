@@ -2655,11 +2655,9 @@ dependencies = [
  "codex-hooks",
  "codex-login",
  "codex-mcp",
- "codex-model-provider",
  "codex-otel",
  "codex-plugin",
  "codex-protocol",
- "codex-tools",
  "codex-utils-absolute-path",
  "codex-utils-path",
  "codex-utils-path-uri",
@@ -3353,8 +3351,6 @@ version = "0.0.0"
 dependencies = [
  "codex-agent-identity",
  "codex-api",
- "codex-aws-auth",
- "codex-client",
  "codex-feedback",
  "codex-login",
  "codex-model-provider-info",
@@ -3879,7 +3875,6 @@ name = "codex-tui"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "app_test_support",
  "arboard",
  "assert_matches",
  "base64 0.22.1",
