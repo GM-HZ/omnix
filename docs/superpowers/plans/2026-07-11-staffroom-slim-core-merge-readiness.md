@@ -396,3 +396,17 @@ verified implementation.
 
 Do not start M9 before M8 has passed once; otherwise failures become harder to distinguish from
 history-rewrite mistakes.
+
+## 5. Known Follow-ups (post-merge)
+
+Recorded during the merge-readiness cleanup round (PR #3). Non-blocking for the
+Cargo-only merge gate; track so they are not rediscovered later.
+
+- **plugin app metadata `category` no longer resolves.** The test
+  `plugin_read_returns_app_metadata_category` was removed (not just as a remote
+  test) because the slimmed connector pipeline no longer returns the app
+  metadata `category` field (was `Some("Productivity")`, now `None`). The
+  general Agent Kernel's tool/skill/plugin/MCP core path does not depend on this
+  display category, so it does not block merge. Restore/verify when a desktop
+  plugin catalog needs categories again — this is a functional change, not a
+  test prune.
