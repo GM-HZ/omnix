@@ -23,9 +23,7 @@ Desktop Application                     Enterprise Gateway
         | JSON-RPC / stdio                       | worker transport
         +-------------------+--------------------+
                             |
-                    codex-agent-worker
-                            |
-                     codex-agent-runtime
+                    codex-app-server
                             |
        +--------------------+--------------------+
        |                    |                    |
@@ -73,10 +71,11 @@ These crates form the smallest useful general agent:
 | `codex-rollout` | Session event persistence |
 | `codex-thread-store` | Thread/session storage abstraction |
 | `codex-login` | API-key/external bearer credential loading only |
-| `codex-agent-runtime` | New stable facade over the kernel |
 
-`codex-core` is retained initially to reach a usable release quickly. New public embedding APIs go
-through `codex-agent-runtime`; business applications must not depend directly on `codex-core`.
+`codex-core` remains the runtime implementation for the first usable release. No new facade or
+worker crate is introduced during the cutting phase. Business applications communicate through
+`codex-app-server`; a stable runtime facade may be extracted only after the retained dependency
+graph and behavior are verified.
 
 ### Tier B: Default General-Agent Capabilities
 
@@ -133,51 +132,39 @@ Bazel remains an optional upstream-maintenance path. The Staffroom release gate 
 Cargo features are additive, so the minimal profile must use `default = []`. Named bundles are
 convenience aliases, not mutually exclusive modes.
 
-### New Entry Crates
+### Existing Entry Crates
 
-#### `codex-agent-runtime`
-
-A library facade exposing:
-
-- runtime construction from host configuration;
-- provider registration;
-- thread start/resume;
-- user turn submission;
-- tool registration and tool result submission;
-- event subscription;
-- shutdown.
-
-It must not expose `codex-core` implementation types in its public API.
-
-#### `codex-agent-worker`
-
-A process entry point that hosts `codex-agent-runtime` and the existing app-server protocol over
-stdio. It replaces `codex-cli` as the production build root. `codex-cli` remains a debug shell.
+- `codex-app-server` is the production process entry point and desktop/enterprise protocol host.
+- `codex-cli` remains the debug entry point; its default build is reduced to `exec` and app-server
+  launch support.
+- `codex-core` remains the internal agent implementation.
+- No new runtime, worker, SDK, or FFI crate is added until cutting and verification are complete.
 
 ### Feature Bundles
 
-The worker defines leaf features and bundles:
+The same leaf features are propagated through `codex-core`, `codex-app-server`, and `codex-cli`.
+The app-server owns the named bundles:
 
 ```toml
 [features]
 default = ["profile-general"]
 
-skills = ["codex-agent-runtime/skills"]
-plugins = ["codex-agent-runtime/plugins"]
-mcp = ["codex-agent-runtime/mcp"]
-hooks = ["codex-agent-runtime/hooks"]
-filesystem = ["codex-agent-runtime/filesystem"]
-shell = ["codex-agent-runtime/shell"]
-patch = ["codex-agent-runtime/patch"]
-git = ["codex-agent-runtime/git"]
-sandbox = ["codex-agent-runtime/sandbox"]
-connectors = ["codex-agent-runtime/connectors"]
-memory = ["codex-agent-runtime/memory"]
-web-search = ["codex-agent-runtime/web-search"]
-image-generation = ["codex-agent-runtime/image-generation"]
-guardian = ["codex-agent-runtime/guardian"]
-goal = ["codex-agent-runtime/goal"]
-telemetry = ["codex-agent-runtime/telemetry"]
+skills = ["codex-core/skills"]
+plugins = ["codex-core/plugins"]
+mcp = ["codex-core/mcp"]
+hooks = ["codex-core/hooks"]
+filesystem = ["codex-core/filesystem"]
+shell = ["codex-core/shell"]
+patch = ["codex-core/patch"]
+git = ["codex-core/git"]
+sandbox = ["codex-core/sandbox"]
+connectors = ["codex-core/connectors"]
+memory = ["codex-core/memory"]
+web-search = ["codex-core/web-search"]
+image-generation = ["codex-core/image-generation"]
+guardian = ["codex-core/guardian"]
+goal = ["codex-core/goal"]
+telemetry = ["codex-core/telemetry"]
 
 profile-minimal = []
 profile-general = ["skills", "plugins", "mcp", "hooks"]
@@ -198,20 +185,20 @@ profile-full = [
 ### Build Commands
 
 ```bash
-# Smallest provider + turn-loop worker
-cargo build -p codex-agent-worker --no-default-features --features profile-minimal
+# Smallest provider + turn-loop app-server
+cargo build -p codex-app-server --no-default-features --features profile-minimal
 
 # Recommended general business agent
-cargo build -p codex-agent-worker --no-default-features --features profile-general
+cargo build -p codex-app-server --no-default-features --features profile-general
 
 # Desktop knowledge application
-cargo build -p codex-agent-worker --no-default-features --features profile-desktop
+cargo build -p codex-app-server --no-default-features --features profile-desktop
 
 # Coding/automation worker
-cargo build -p codex-agent-worker --no-default-features --features profile-automation
+cargo build -p codex-app-server --no-default-features --features profile-automation
 
 # Explicit custom combination
-cargo build -p codex-agent-worker --no-default-features \
+cargo build -p codex-app-server --no-default-features \
   --features skills,plugins,mcp,filesystem,memory
 ```
 
@@ -220,9 +207,9 @@ The root workspace sets:
 ```toml
 [workspace]
 default-members = [
-  "agent-runtime",
-  "agent-worker",
+  "app-server",
   "app-server-protocol",
+  "cli",
 ]
 ```
 
@@ -231,15 +218,13 @@ extensions.
 
 ## 5. Required Dependency Refactoring
 
-Adding features only at the worker is insufficient because `codex-core` and `codex-app-server`
-currently declare many hard dependencies. Feature propagation must continue through all three
-layers:
+Adding features only at the app-server is insufficient because `codex-core` currently declares
+many hard dependencies. Feature propagation must continue through the existing layers:
 
 ```text
-agent-worker feature
-  -> agent-runtime feature
-     -> codex-core feature
-        -> optional capability dependency
+codex-cli/app-server feature
+  -> codex-core feature
+     -> optional capability dependency
 ```
 
 The same rule applies to app-server handlers. A handler for an optional capability is compiled
@@ -305,19 +290,19 @@ for the first usable service.
 
 ### Layer 1: Compile Matrix
 
-Every supported profile must compile independently:
+Every supported app-server profile must compile independently:
 
 ```bash
-cargo check -p codex-agent-worker --no-default-features --features profile-minimal
-cargo check -p codex-agent-worker --no-default-features --features profile-general
-cargo check -p codex-agent-worker --no-default-features --features profile-desktop
-cargo check -p codex-agent-worker --no-default-features --features profile-automation
+cargo check -p codex-app-server --no-default-features --features profile-minimal
+cargo check -p codex-app-server --no-default-features --features profile-general
+cargo check -p codex-app-server --no-default-features --features profile-desktop
+cargo check -p codex-app-server --no-default-features --features profile-automation
 ```
 
 CI also checks one custom combination to prevent bundle-only coupling:
 
 ```bash
-cargo check -p codex-agent-worker --no-default-features \
+cargo check -p codex-app-server --no-default-features \
   --features skills,plugins,mcp,filesystem,memory
 ```
 
@@ -377,46 +362,49 @@ or feedback endpoints.
 CI records but initially does not hard-fail on:
 
 - clean build wall-clock time;
-- incremental build time after changing agent-runtime code;
-- worker binary size;
+- incremental build time after changing `codex-core` code;
+- app-server and CLI binary size;
 - number of compiled crates via Cargo build timings;
 - startup time to `initialize`;
 - idle resident memory.
 
 After two stable releases, budgets are set from observed baselines. The target is that
 `profile-general` compiles materially fewer crates and produces a smaller artifact than the current
-`codex-cli` build.
+unconditional app-server build.
 
 ## 9. Delivery Phases
 
-### Phase 1: Usable Worker
+### Phase 1: Crate-Level Cutting
 
-- Add `codex-agent-runtime` facade and `codex-agent-worker` process entry.
-- Retain current `codex-core` internals.
-- Set Cargo `default-members`.
-- Support model turn, compact, session, generic tools, app-server stdio, and CLI smoke.
-- Remove TUI, V8, realtime, migration, samples, and Bazel from the release build command.
+- Keep the existing `codex-core`, `codex-app-server`, and `codex-cli` entry path.
+- Remove dependencies outside the first general-agent release.
+- Set Cargo `default-members` to app-server, protocol, and CLI.
+- Remove TUI, V8, realtime, migration, samples, and Bazel from release build commands.
+- Preserve a continuously working `codex exec "say hi"` smoke.
 
-This phase produces a usable version quickly even before every optional dependency is removed from
-`codex-core`.
-
-### Phase 2: Real Feature-Gated Dependency Reduction
+### Phase 2: Feature-Gated Dependency Reduction
 
 - Convert core and app-server capability dependencies to optional dependencies.
 - Add feature-scoped registration and unavailable handlers.
 - Establish compile-matrix CI and artifact measurements.
-- Enable `profile-general`, `profile-desktop`, and custom feature combinations.
+- Enable minimal, general, desktop, automation, and custom feature combinations.
 
-### Phase 3: Business SDK And Enterprise Hardening
+### Phase 3: Verification And Usable Release
 
-- Publish the process client SDK used by desktop applications.
-- Add gateway/worker lifecycle and tenant-isolation tests.
-- Stabilize the subset of app-server methods used by Staffroom.
-- Consider FFI only after profiling.
+- Pass tool, skill, plugin, MCP, compact, session, and app-server end-to-end smokes.
+- Verify product-network denial and artifact measurements.
+- Publish the existing app-server process contract used by desktop and enterprise hosts.
+
+### Phase 4: Optional Boundary Extraction
+
+- Evaluate the stable retained dependency graph.
+- Extract a runtime facade only if multiple Rust hosts need a direct library API.
+- Extract a dedicated worker only if app-server still carries substantial non-runtime behavior.
+- Consider FFI only after profiling demonstrates a process-communication bottleneck.
 
 ## 10. Acceptance Criteria For The First Usable Release
 
-- Cargo builds the worker without TUI, V8, realtime, migration, sample, or Bazel work.
+- Cargo builds the app-server without TUI, V8, realtime, migration, sample, or Bazel work.
 - DeepSeek/Qwen or another configured OpenAI-compatible provider completes `say hi`.
 - Tool, skill, local plugin, MCP, compact, persist, and resume smokes pass.
 - Desktop client can communicate with app-server over stdio.
