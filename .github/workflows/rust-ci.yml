@@ -201,7 +201,18 @@ jobs:
         env:
           ARGUMENT_COMMENT_LINT: ${{ needs.changed.outputs.argument_comment_lint }}
           WORKFLOWS: ${{ needs.changed.outputs.workflows }}
+          # Empty on forks that do not provision the BuildBuddy remote cache.
+          HAS_BUILDBUDDY: ${{ secrets.BUILDBUDDY_API_KEY != '' }}
         run: |
+          # This lint runs via Bazel + BuildBuddy. Forks without the BuildBuddy
+          # secret cannot run it (the job would otherwise hang until timeout),
+          # so skip cleanly there — it is not part of the Cargo-only merge gate.
+          if [[ "$HAS_BUILDBUDDY" != "true" ]]; then
+            echo "BuildBuddy secret unavailable; skipping argument-comment-lint (Bazel)."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           if [[ "$ARGUMENT_COMMENT_LINT" == "true" || "$WORKFLOWS" == "true" ]]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
             exit 0
@@ -258,11 +269,8 @@ jobs:
             [[ '${{ needs.argument_comment_lint_package.result }}' == 'success' ]] || { echo 'argument_comment_lint_package failed'; exit 1; }
           fi
 
-          # Fork exception: argument-comment-lint runs via Bazel + BuildBuddy,
-          # which this fork does not provision (Cargo-only merge gate). Report
-          # its result but do not block on it.
           if [[ "${NEEDS_CHANGED_OUTPUTS_ARGUMENT_COMMENT_LINT}" == 'true' || "${NEEDS_CHANGED_OUTPUTS_WORKFLOWS}" == 'true' ]]; then
-            [[ '${{ needs.argument_comment_lint_prebuilt.result }}' == 'success' ]] || echo 'argument_comment_lint_prebuilt not successful (Bazel; not required on this fork)'
+            [[ '${{ needs.argument_comment_lint_prebuilt.result }}' == 'success' ]] || { echo 'argument_comment_lint_prebuilt failed'; exit 1; }
           fi
 
           if [[ "${NEEDS_CHANGED_OUTPUTS_CODEX}" == 'true' || "${NEEDS_CHANGED_OUTPUTS_WORKFLOWS}" == 'true' ]]; then
