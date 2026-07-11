@@ -6,8 +6,6 @@ use crate::common::ResponseStream;
 use crate::error::ApiError;
 use codex_client::ByteStream;
 use codex_client::StreamResponse;
-use codex_protocol::OmnixMessage;
-use codex_protocol::OmnixToolCall;
 use codex_protocol::protocol::TokenUsage;
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
@@ -174,6 +172,8 @@ async fn process_chat_completions_sse(
                     "stop" | "length" => {
                         flush_text_response(&response_id, &content_acc, &thinking_acc, &usage, &tx)
                             .await;
+                        content_acc.clear();
+                        thinking_acc.clear();
                     }
                     _ => {}
                 }
@@ -233,26 +233,27 @@ async fn flush_tool_calls(
     let has_content = !content.is_empty();
     let has_thinking = !thinking.is_empty();
 
-    let mut omnix_tool_calls: Vec<OmnixToolCall> = Vec::new();
+    if has_thinking {
+        emit_reasoning_item(thinking, tx).await;
+    }
+    if has_content {
+        emit_assistant_message_item(content, tx).await;
+    }
+
     for slot in tool_slots.drain(..) {
         if slot.id.is_empty() {
             continue;
         }
-        omnix_tool_calls.push(OmnixToolCall::new(slot.id, slot.name, slot.arguments));
-    }
-
-    if has_content || has_thinking {
-        let msg = if has_content {
-            OmnixMessage::assistant_with_thinking(Some(content.to_string()), thinking.to_string())
-        } else {
-            OmnixMessage::assistant_with_thinking(None, thinking.to_string())
+        use codex_protocol::models::ResponseItem;
+        let item = ResponseItem::FunctionCall {
+            id: None,
+            name: slot.name,
+            namespace: None,
+            arguments: slot.arguments,
+            call_id: slot.id,
+            internal_chat_message_metadata_passthrough: None,
         };
-        let _ = tx.send(Ok(ResponseEvent::ChatOutputItemDone(msg))).await;
-    }
-
-    if !omnix_tool_calls.is_empty() {
-        let msg = OmnixMessage::assistant_tool_calls(omnix_tool_calls);
-        let _ = tx.send(Ok(ResponseEvent::ChatOutputItemDone(msg))).await;
+        let _ = tx.send(Ok(ResponseEvent::OutputItemDone(item))).await;
     }
 }
 
@@ -267,11 +268,49 @@ async fn flush_text_response(
         return;
     }
 
-    let msg = if !content.is_empty() {
-        OmnixMessage::assistant_with_thinking(Some(content.to_string()), thinking.to_string())
-    } else {
-        OmnixMessage::assistant_with_thinking(None, thinking.to_string())
-    };
+    if !thinking.is_empty() {
+        emit_reasoning_item(thinking, tx).await;
+    }
+    if !content.is_empty() {
+        emit_assistant_message_item(content, tx).await;
+    }
+}
 
-    let _ = tx.send(Ok(ResponseEvent::ChatOutputItemDone(msg))).await;
+/// Emit a completed assistant text message as a standard `OutputItemDone` so
+/// the core turn loop lands and renders it the same way it does for the
+/// Responses API.
+async fn emit_assistant_message_item(
+    content: &str,
+    tx: &mpsc::Sender<Result<ResponseEvent, ApiError>>,
+) {
+    use codex_protocol::models::ContentItem;
+    use codex_protocol::models::ResponseItem;
+
+    let item = ResponseItem::Message {
+        id: None,
+        role: "assistant".to_string(),
+        content: vec![ContentItem::OutputText {
+            text: content.to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let _ = tx.send(Ok(ResponseEvent::OutputItemDone(item))).await;
+}
+
+/// Emit accumulated reasoning/thinking as a standard `Reasoning` item.
+async fn emit_reasoning_item(thinking: &str, tx: &mpsc::Sender<Result<ResponseEvent, ApiError>>) {
+    use codex_protocol::models::ReasoningItemContent;
+    use codex_protocol::models::ResponseItem;
+
+    let item = ResponseItem::Reasoning {
+        id: None,
+        summary: Vec::new(),
+        content: Some(vec![ReasoningItemContent::ReasoningText {
+            text: thinking.to_string(),
+        }]),
+        encrypted_content: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let _ = tx.send(Ok(ResponseEvent::OutputItemDone(item))).await;
 }
