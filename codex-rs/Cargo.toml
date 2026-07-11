@@ -42,7 +42,6 @@ members = [
     "exec-server-protocol",
     "exec-server",
     "execpolicy",
-    "execpolicy-legacy",
     "ext/connectors",
     "ext/extension-api",
     "ext/goal",
@@ -70,7 +69,6 @@ members = [
     "ollama",
     "process-hardening",
     "protocol",
-    "realtime-webrtc",
     "prompts",
     "rollout",
     "rollout-trace",
@@ -81,7 +79,6 @@ members = [
     "otel",
     "tui",
     "tools",
-    "v8-poc",
     "utils/absolute-path",
     "utils/path-uri",
     "utils/cargo-bin",
@@ -91,7 +88,6 @@ members = [
     "utils/json-to-toml",
     "utils/home-dir",
     "utils/pty",
-    "utils/readiness",
     "utils/rustls-provider",
     "utils/string",
     "utils/cli",
@@ -111,12 +107,16 @@ members = [
     "state",
     "terminal-detection",
     "test-binary-support",
-    "thread-manager-sample",
     "thread-store",
     "uds",
     "codex-experimental-api-macros",
     "plugin",
     "model-provider",
+]
+default-members = [
+    "app-server",
+    "app-server-protocol",
+    "cli",
 ]
 resolver = "2"
 
@@ -243,7 +243,6 @@ codex-utils-sleep-inhibitor = { path = "utils/sleep-inhibitor" }
 codex-utils-stream-parser = { path = "utils/stream-parser" }
 codex-utils-string = { path = "utils/string" }
 codex-utils-template = { path = "utils/template" }
-codex-v8-poc = { path = "v8-poc" }
 codex-windows-sandbox = { path = "windows-sandbox-rs" }
 core_test_support = { path = "core/tests/common" }
 mcp_test_support = { path = "mcp-server/tests/common" }
@@ -497,7 +496,6 @@ unwrap_used = "deny"
 ignored = [
     "icu_provider",
     "openssl-sys",
-    "codex-v8-poc",
 ]
 
 [profile.dev]
