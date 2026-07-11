@@ -680,8 +680,8 @@ async fn reserved_builtin_provider_override_rejected() {
     let error = service
         .write_value(ConfigValueWriteParams {
             file_path: Some(tmp.path().join(CONFIG_TOML_FILE).display().to_string()),
-            key_path: "model_providers.openai.name".to_string(),
-            value: serde_json::json!("OpenAI Override"),
+            key_path: "model_providers.local.name".to_string(),
+            value: serde_json::json!("Local Override"),
             merge_strategy: MergeStrategy::Replace,
             expected_version: None,
         })
@@ -693,7 +693,7 @@ async fn reserved_builtin_provider_override_rejected() {
         Some(ConfigWriteErrorCode::ConfigValidationError)
     );
     assert!(error.to_string().contains("reserved built-in provider IDs"));
-    assert!(error.to_string().contains("`openai`"));
+    assert!(error.to_string().contains("`local`"));
 
     let contents = std::fs::read_to_string(tmp.path().join(CONFIG_TOML_FILE)).expect("read config");
     assert_eq!(contents, "model = \"user\"\n");
