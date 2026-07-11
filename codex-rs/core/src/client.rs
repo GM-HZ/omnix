@@ -909,9 +909,25 @@ impl ModelClient {
             messages.push(val);
         }
 
-        // Convert input items to Chat Completions messages
+        // Convert input items to Chat Completions messages.
+        //
+        // Reasoning lives in internal history as a standalone
+        // `ResponseItem::Reasoning` that immediately precedes the assistant
+        // message/tool-call it belongs to. The Chat Completions wire format
+        // instead carries it as `reasoning_content` on that assistant message,
+        // and DeepSeek's thinking mode *requires* it on tool-call turns. So we
+        // hold the most recent reasoning text and attach it to the next
+        // assistant message we emit.
+        let mut pending_reasoning: Option<String> = None;
         for item in prompt.get_formatted_input_for_request(model_info.use_responses_lite) {
-            if let Some(msg_val) = response_item_to_chat_message(&item) {
+            if let ResponseItem::Reasoning { .. } = &item {
+                if let Some(text) = reasoning_item_text(&item) {
+                    pending_reasoning = Some(text);
+                }
+                continue;
+            }
+            let reasoning_for_item = pending_reasoning.take();
+            if let Some(msg_val) = response_item_to_chat_message(&item, reasoning_for_item) {
                 messages.push(msg_val);
             }
         }
@@ -2447,7 +2463,10 @@ impl WebsocketTelemetry for ApiTelemetry {
 /// Convert a `ResponseItem` to a Chat Completions message JSON value.
 /// Returns `None` for items that have no Chat Completions equivalent
 /// (e.g. Compaction markers).
-fn response_item_to_chat_message(item: &ResponseItem) -> Option<serde_json::Value> {
+fn response_item_to_chat_message(
+    item: &ResponseItem,
+    reasoning: Option<String>,
+) -> Option<serde_json::Value> {
     use codex_protocol::OmnixContentPart;
     use codex_protocol::OmnixImageUrl;
     use codex_protocol::OmnixMessage;
@@ -2489,7 +2508,15 @@ fn response_item_to_chat_message(item: &ResponseItem) -> Option<serde_json::Valu
                 let msg = match role.as_str() {
                     "system" => OmnixMessage::system(text),
                     "user" => OmnixMessage::user_text(text),
-                    "assistant" => OmnixMessage::assistant_text(text),
+                    // Reattach the reasoning that preceded this assistant turn so
+                    // DeepSeek thinking mode accepts follow-up requests. Plain
+                    // assistant text with no preceding reasoning is still emitted.
+                    "assistant" => match reasoning {
+                        Some(reasoning) => {
+                            OmnixMessage::assistant_with_thinking(Some(text), reasoning)
+                        }
+                        None => OmnixMessage::assistant_text(text),
+                    },
                     _ => return None,
                 };
                 serde_json::to_value(&msg).ok()
@@ -2502,11 +2529,14 @@ fn response_item_to_chat_message(item: &ResponseItem) -> Option<serde_json::Valu
             ..
         } => {
             use codex_protocol::OmnixToolCall;
-            let msg = OmnixMessage::assistant_tool_calls(vec![OmnixToolCall::new(
-                call_id.clone(),
-                name.clone(),
-                arguments.clone(),
-            )]);
+            let msg = OmnixMessage::assistant_tool_calls_with_thinking(
+                vec![OmnixToolCall::new(
+                    call_id.clone(),
+                    name.clone(),
+                    arguments.clone(),
+                )],
+                reasoning,
+            );
             serde_json::to_value(&msg).ok()
         }
         ResponseItem::FunctionCallOutput {
@@ -2527,22 +2557,52 @@ fn response_item_to_chat_message(item: &ResponseItem) -> Option<serde_json::Valu
                     e
                 })
                 .unwrap_or_default();
-            let msg = OmnixMessage::assistant_tool_calls(vec![OmnixToolCall::new(
-                id,
-                "shell".into(),
-                args,
-            )]);
+            let msg = OmnixMessage::assistant_tool_calls_with_thinking(
+                vec![OmnixToolCall::new(id, "shell".into(), args)],
+                reasoning,
+            );
             serde_json::to_value(&msg).ok()
         }
         ResponseItem::Reasoning { .. } => {
-            // Reasoning/thinking content is not sent back to Chat Completions APIs —
-            // providers don't accept reasoning in follow-up requests. This content
-            // is preserved in internal history for TUI display only.
+            // Reasoning is merged into the following assistant message by the
+            // caller (see build_chat_completions_request); it is never emitted
+            // as a standalone Chat Completions message.
             None
         }
         ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. } => None,
         _ => None,
     }
+}
+
+/// Extract the plain reasoning text from a `ResponseItem::Reasoning`, checking
+/// both the raw `content` and the `summary` representations.
+fn reasoning_item_text(item: &ResponseItem) -> Option<String> {
+    use codex_protocol::models::ReasoningItemContent;
+    use codex_protocol::models::ReasoningItemReasoningSummary;
+
+    let ResponseItem::Reasoning {
+        summary, content, ..
+    } = item
+    else {
+        return None;
+    };
+
+    let mut text = String::new();
+    if let Some(content) = content {
+        for part in content {
+            match part {
+                ReasoningItemContent::ReasoningText { text: t }
+                | ReasoningItemContent::Text { text: t } => text.push_str(t),
+            }
+        }
+    }
+    if text.is_empty() {
+        for ReasoningItemReasoningSummary::SummaryText { text: t } in summary {
+            text.push_str(t);
+        }
+    }
+
+    (!text.is_empty()).then_some(text)
 }
 
 /// Convert tool specs to Chat Completions tools format.

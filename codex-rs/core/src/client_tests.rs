@@ -882,3 +882,81 @@ async fn non_chatgpt_codex_endpoints_omit_attestation_generation() {
     );
     assert_eq!(attestation_calls.load(Ordering::Relaxed), 0);
 }
+
+#[test]
+fn tool_call_message_carries_preceding_reasoning_content() {
+    // DeepSeek thinking mode rejects tool-call turns whose reasoning_content is
+    // not passed back. The reasoning that preceded the call must be reattached.
+    let call = ResponseItem::FunctionCall {
+        id: None,
+        name: "shell".to_string(),
+        namespace: None,
+        arguments: r#"{"command":["ls"]}"#.to_string(),
+        call_id: "call-1".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let msg = super::response_item_to_chat_message(&call, Some("Let me list files.".to_string()))
+        .expect("tool call should convert to a chat message");
+
+    assert_eq!(msg["role"], "assistant");
+    assert_eq!(msg["tool_calls"][0]["id"], "call-1");
+    assert_eq!(msg["tool_calls"][0]["function"]["name"], "shell");
+    assert_eq!(msg["reasoning_content"], "Let me list files.");
+}
+
+#[test]
+fn assistant_text_carries_preceding_reasoning_content() {
+    let message = ResponseItem::Message {
+        id: None,
+        role: "assistant".to_string(),
+        content: vec![ContentItem::OutputText {
+            text: "Done.".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let msg = super::response_item_to_chat_message(&message, Some("Thinking...".to_string()))
+        .expect("assistant message should convert");
+
+    assert_eq!(msg["role"], "assistant");
+    assert_eq!(msg["content"], "Done.");
+    assert_eq!(msg["reasoning_content"], "Thinking...");
+}
+
+#[test]
+fn assistant_text_without_reasoning_omits_reasoning_content() {
+    let message = ResponseItem::Message {
+        id: None,
+        role: "assistant".to_string(),
+        content: vec![ContentItem::OutputText {
+            text: "Hi".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let msg = super::response_item_to_chat_message(&message, None)
+        .expect("assistant message should convert");
+
+    assert_eq!(msg["content"], "Hi");
+    assert!(msg.get("reasoning_content").is_none());
+}
+
+#[test]
+fn standalone_reasoning_item_produces_no_message() {
+    let reasoning = ResponseItem::Reasoning {
+        id: None,
+        summary: Vec::new(),
+        content: Some(vec![
+            codex_protocol::models::ReasoningItemContent::ReasoningText {
+                text: "internal".to_string(),
+            },
+        ]),
+        encrypted_content: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    assert!(super::response_item_to_chat_message(&reasoning, None).is_none());
+    assert_eq!(
+        super::reasoning_item_text(&reasoning).as_deref(),
+        Some("internal")
+    );
+}
