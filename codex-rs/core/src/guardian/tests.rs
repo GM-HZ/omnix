@@ -22,9 +22,6 @@ use codex_config::types::McpServerConfig;
 use codex_exec_server::LOCAL_FS;
 use codex_features::Feature;
 use codex_model_provider::create_model_provider;
-use codex_model_provider_info::AMAZON_BEDROCK_GPT_5_4_MODEL_ID;
-use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
-use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_models_manager::manager::StaticModelsManager;
 use codex_network_proxy::NetworkProxyConfig;
@@ -35,7 +32,6 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelsResponse;
-use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
 use codex_protocol::permissions::FileSystemSandboxEntry;
@@ -3080,39 +3076,6 @@ async fn guardian_review_session_config_uses_parent_active_model_instead_of_hard
     .expect("guardian config");
 
     assert_eq!(guardian_config.model, Some("active-model".to_string()));
-}
-
-#[tokio::test]
-async fn guardian_review_session_config_keeps_bedrock_provider_for_bedrock_gpt_5_4() {
-    let mut parent_config = test_config().await;
-    parent_config.model_provider_id = AMAZON_BEDROCK_PROVIDER_ID.to_string();
-    parent_config.model_provider =
-        ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None);
-
-    let guardian_config = build_guardian_review_session_config_for_test(
-        &parent_config,
-        /*live_network_config*/ None,
-        AMAZON_BEDROCK_GPT_5_4_MODEL_ID,
-        Some(ReasoningEffort::Low),
-    )
-    .expect("guardian config");
-
-    let mut expected_model_provider =
-        ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None);
-    expected_model_provider.request_max_retries = Some(1);
-    expected_model_provider.stream_max_retries = Some(1);
-    assert_eq!(
-        (
-            guardian_config.model,
-            guardian_config.model_provider_id,
-            guardian_config.model_provider,
-        ),
-        (
-            Some(AMAZON_BEDROCK_GPT_5_4_MODEL_ID.to_string()),
-            AMAZON_BEDROCK_PROVIDER_ID.to_string(),
-            expected_model_provider,
-        )
-    );
 }
 
 #[tokio::test]

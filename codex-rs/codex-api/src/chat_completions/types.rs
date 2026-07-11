@@ -41,9 +41,7 @@ pub enum DeepSeekThinking {
     /// Enable thinking with default budget.
     Enabled,
     /// Enable thinking with explicit token budget.
-    Annotated {
-        budget: u32,
-    },
+    Annotated { budget: u32 },
 }
 
 #[derive(Debug, Clone, Serialize)]

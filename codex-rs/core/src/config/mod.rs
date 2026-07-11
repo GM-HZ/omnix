@@ -80,9 +80,9 @@ use codex_memories_read::memory_root;
 use codex_model_provider_info::DEEPSEEK_PROVIDER_ID;
 use codex_model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
 use codex_model_provider_info::LOCAL_PROVIDER_ID;
-use codex_model_provider_info::QWEN_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OLLAMA_CHAT_PROVIDER_REMOVED_ERROR;
+use codex_model_provider_info::QWEN_PROVIDER_ID;
 use codex_model_provider_info::built_in_model_providers;
 use codex_model_provider_info::merge_configured_model_providers;
 use codex_models_manager::ModelsManagerConfig;
@@ -1488,8 +1488,6 @@ impl Config {
         PluginsConfigInput::new(
             self.config_layer_stack.clone(),
             self.features.enabled(Feature::Plugins),
-            self.features.enabled(Feature::RemotePlugin),
-            self.chatgpt_base_url.clone(),
         )
     }
 
@@ -2459,10 +2457,16 @@ fn resolve_experimental_request_user_input_enabled(config_toml: &ConfigToml) -> 
 
 /// When no explicit model provider is configured, auto-detect from environment.
 fn default_model_provider_id() -> String {
-    if std::env::var("DEEPSEEK_API_KEY").ok().is_some_and(|v| !v.is_empty()) {
+    if std::env::var("DEEPSEEK_API_KEY")
+        .ok()
+        .is_some_and(|v| !v.is_empty())
+    {
         return DEEPSEEK_PROVIDER_ID.to_string();
     }
-    if std::env::var("DASHSCOPE_API_KEY").ok().is_some_and(|v| !v.is_empty()) {
+    if std::env::var("DASHSCOPE_API_KEY")
+        .ok()
+        .is_some_and(|v| !v.is_empty())
+    {
         return QWEN_PROVIDER_ID.to_string();
     }
     LOCAL_PROVIDER_ID.to_string()
@@ -3423,7 +3427,7 @@ impl Config {
 
         let model_provider_id = model_provider
             .or(cfg.model_provider)
-            .unwrap_or_else(|| default_model_provider_id());
+            .unwrap_or_else(default_model_provider_id);
         let model_provider = model_providers
             .get(&model_provider_id)
             .ok_or_else(|| {

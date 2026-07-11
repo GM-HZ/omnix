@@ -209,6 +209,36 @@ async fn build_custom_tool_call_uses_namespace_for_registry_name() -> anyhow::Re
 }
 
 #[tokio::test]
+async fn build_apply_patch_function_call_uses_custom_payload() -> anyhow::Result<()> {
+    let call = ToolRouter::build_tool_call(ResponseItem::FunctionCall {
+        id: None,
+        name: "apply_patch".to_string(),
+        namespace: None,
+        arguments: json!({
+            "input": "*** Begin Patch\n*** Add File: notes.txt\n+hello\n*** End Patch\n"
+        })
+        .to_string(),
+        call_id: "call-apply-patch".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+    })?
+    .expect("function_call should produce a tool call");
+
+    assert_eq!(
+        call,
+        ToolCall {
+            tool_name: ToolName::plain("apply_patch"),
+            call_id: "call-apply-patch".to_string(),
+            payload: ToolPayload::Custom {
+                input: "*** Begin Patch\n*** Add File: notes.txt\n+hello\n*** End Patch\n"
+                    .to_string(),
+            },
+        }
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn mcp_parallel_support_uses_handler_data() -> anyhow::Result<()> {
     let (_, turn) = make_session_and_context().await;
     let turn = Arc::new(turn);

@@ -158,21 +158,13 @@ enabled = true
 
     let full = load_plugins_from_layer_stack(
         &stack,
-        HashMap::new(),
         &store,
         /*plugin_skill_snapshots*/ None,
         Some(Product::Codex),
-        /*remote_global_catalog_active*/ false,
     )
     .await;
-    let hooks_only = load_plugins_from_layer_stack_with_scope(
-        &stack,
-        HashMap::new(),
-        &store,
-        /*remote_global_catalog_active*/ false,
-        PluginLoadScope::HooksOnly,
-    )
-    .await;
+    let hooks_only =
+        load_plugins_from_layer_stack_with_scope(&stack, &store, PluginLoadScope::HooksOnly).await;
 
     let validation_state = |plugins: &[LoadedPlugin<McpServerConfig>]| {
         plugins

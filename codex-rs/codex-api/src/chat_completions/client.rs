@@ -39,8 +39,9 @@ impl<T: HttpTransport> ChatCompletionsClient<T> {
         request: ChatCompletionsRequest,
         extra_headers: HeaderMap,
     ) -> Result<ResponseStream, ApiError> {
-        let body = EncodedJsonBody::encode(&request)
-            .map_err(|e| ApiError::InvalidRequest { message: format!("Failed to serialize request: {e}") })?;
+        let body = EncodedJsonBody::encode(&request).map_err(|e| ApiError::InvalidRequest {
+            message: format!("Failed to serialize request: {e}"),
+        })?;
 
         let path = "/chat/completions";
         let stream_response = self

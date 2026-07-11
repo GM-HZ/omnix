@@ -7,10 +7,12 @@ use super::plugin_catalog::marketplace_is_user_configured_git;
 use super::plugin_catalog::marketplace_tab_id;
 use super::plugin_catalog::marketplace_tab_id_from_path;
 use super::plugin_catalog::marketplace_tab_id_matching_saved_id;
+#[cfg(test)]
 use super::plugin_catalog::merge_remote_marketplaces;
 use super::plugin_catalog::plugin_detail_hint_line;
 use crate::app_event::AppEvent;
 use crate::app_event::PluginLocation;
+#[cfg(test)]
 use crate::app_event::PluginRemoteSectionError;
 use crate::bottom_pane::ColumnWidthMode;
 use crate::bottom_pane::SelectionItem;
@@ -24,6 +26,7 @@ use codex_app_server_protocol::MarketplaceRemoveResponse;
 use codex_app_server_protocol::MarketplaceUpgradeResponse;
 use codex_app_server_protocol::PluginInstallResponse;
 use codex_app_server_protocol::PluginListResponse;
+#[cfg(test)]
 use codex_app_server_protocol::PluginMarketplaceEntry;
 use codex_app_server_protocol::PluginReadResponse;
 use codex_app_server_protocol::PluginUninstallResponse;
@@ -161,6 +164,7 @@ impl ChatWidget {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn on_plugin_remote_sections_loaded(
         &mut self,
         cwd: PathBuf,
@@ -171,31 +175,14 @@ impl ChatWidget {
             return;
         }
 
-        let should_refresh_plugins_popup = self
-            .bottom_pane
-            .active_tab_id_for_active_view(PLUGINS_SELECTION_VIEW_ID)
-            .is_some();
         self.plugin_remote_sections_loading = false;
         self.plugin_remote_sections_loaded = true;
         self.plugins_fetch_state.vertical_section_requested = false;
-        let refreshed_response = match &mut self.plugins_cache {
-            PluginsCacheState::Ready(response)
-                if self.plugins_fetch_state.cache_cwd.as_deref() == Some(cwd.as_path()) =>
-            {
-                merge_remote_marketplaces(response, marketplaces);
-                self.plugin_remote_section_errors = section_errors;
-                Some(response.clone())
-            }
-            _ => {
-                self.plugin_remote_section_errors = section_errors;
-                None
-            }
-        };
-
-        if let Some(response) = refreshed_response
-            && should_refresh_plugins_popup
+        if let PluginsCacheState::Ready(response) = &mut self.plugins_cache
+            && self.plugins_fetch_state.cache_cwd.as_deref() == Some(cwd.as_path())
         {
-            self.refresh_plugins_popup_if_open(&response);
+            merge_remote_marketplaces(response, marketplaces);
+            self.plugin_remote_section_errors = section_errors;
         }
     }
 
