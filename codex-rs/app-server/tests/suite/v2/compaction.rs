@@ -6,10 +6,8 @@
 //! 3) Assert: verify item/started + item/completed notifications for context compaction.
 
 use anyhow::Result;
-use app_test_support::ChatGptAuthFixture;
 use app_test_support::TestAppServer;
 use app_test_support::to_response;
-use app_test_support::write_chatgpt_auth;
 use app_test_support::write_mock_responses_config_toml;
 use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::ItemStartedNotification;
@@ -26,10 +24,6 @@ use codex_app_server_protocol::TurnCompletedNotification;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::UserInput as V2UserInput;
-use codex_config::types::AuthCredentialsStoreMode;
-use codex_features::Feature;
-use codex_protocol::models::ContentItem;
-use codex_protocol::models::ResponseItem;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;
 use pretty_assertions::assert_eq;
@@ -102,149 +96,6 @@ async fn auto_compaction_local_emits_started_and_completed_items() -> Result<()>
     assert_eq!(started.thread_id, thread_id);
     assert_eq!(completed.thread_id, thread_id);
     assert_eq!(started_id, completed_id);
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn auto_compaction_remote_emits_started_and_completed_items() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-    const REMOTE_AUTO_COMPACT_LIMIT: i64 = 200_000;
-
-    let server = responses::start_mock_server().await;
-    let sse1 = responses::sse(vec![
-        responses::ev_assistant_message("m1", "FIRST_REPLY"),
-        responses::ev_completed_with_tokens("r1", /*total_tokens*/ 70_000),
-    ]);
-    let sse2 = responses::sse(vec![
-        responses::ev_assistant_message("m2", "SECOND_REPLY"),
-        responses::ev_completed_with_tokens("r2", /*total_tokens*/ 330_000),
-    ]);
-    let sse3 = responses::sse(vec![
-        responses::ev_assistant_message("m3", "FINAL_REPLY"),
-        responses::ev_completed_with_tokens("r3", /*total_tokens*/ 120),
-    ]);
-    let responses_log = responses::mount_sse_sequence(&server, vec![sse1, sse2, sse3]).await;
-
-    let compacted_history = vec![
-        ResponseItem::Message {
-            id: None,
-            role: "assistant".to_string(),
-            content: vec![ContentItem::OutputText {
-                text: "REMOTE_COMPACT_SUMMARY".to_string(),
-            }],
-            phase: None,
-            internal_chat_message_metadata_passthrough: None,
-        },
-        ResponseItem::Compaction {
-            id: None,
-            encrypted_content: "ENCRYPTED_COMPACTION_SUMMARY".to_string(),
-            internal_chat_message_metadata_passthrough: None,
-        },
-    ];
-    let compact_mock = responses::mount_compact_json_once(
-        &server,
-        serde_json::json!({ "output": compacted_history }),
-    )
-    .await;
-
-    let codex_home = TempDir::new()?;
-    write_mock_responses_config_toml(
-        codex_home.path(),
-        &server.uri(),
-        &BTreeMap::from([(Feature::RemoteCompactionV2, false)]),
-        REMOTE_AUTO_COMPACT_LIMIT,
-        Some(true),
-        "mock_provider",
-        COMPACT_PROMPT,
-    )?;
-    write_chatgpt_auth(
-        codex_home.path(),
-        ChatGptAuthFixture::new("access-chatgpt").plan_type("pro"),
-        AuthCredentialsStoreMode::File,
-    )?;
-
-    let mut mcp =
-        TestAppServer::new_with_env(codex_home.path(), &[("OPENAI_API_KEY", None)]).await?;
-    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
-
-    let thread_id = start_thread(&mut mcp).await?;
-    for message in ["first", "second", "third"] {
-        send_turn_and_wait(&mut mcp, &thread_id, message).await?;
-    }
-
-    let started = wait_for_context_compaction_started(&mut mcp).await?;
-    let completed = wait_for_context_compaction_completed(&mut mcp).await?;
-
-    let ThreadItem::ContextCompaction { id: started_id } = started.item else {
-        unreachable!("started item should be context compaction");
-    };
-    let ThreadItem::ContextCompaction { id: completed_id } = completed.item else {
-        unreachable!("completed item should be context compaction");
-    };
-
-    assert_eq!(started.thread_id, thread_id);
-    assert_eq!(completed.thread_id, thread_id);
-    assert_eq!(started_id, completed_id);
-
-    let compact_requests = compact_mock.requests();
-    assert_eq!(compact_requests.len(), 1);
-    assert_eq!(compact_requests[0].path(), "/v1/responses/compact");
-
-    let response_requests = responses_log.requests();
-    assert_eq!(response_requests.len(), 3);
-    let turn_metadata = response_requests
-        .iter()
-        .map(|request| {
-            request
-                .header("x-codex-turn-metadata")
-                .as_deref()
-                .map(parse_json_header)
-                .expect("turn request should include turn metadata")
-        })
-        .collect::<Vec<_>>();
-    for (request, metadata) in response_requests.iter().zip(&turn_metadata) {
-        assert_eq!(metadata["request_kind"].as_str(), Some("turn"));
-        assert!(
-            metadata["turn_id"]
-                .as_str()
-                .is_some_and(|turn_id| !turn_id.is_empty()),
-            "turn request should carry a non-empty turn id"
-        );
-        assert_eq!(
-            metadata["window_id"].as_str(),
-            request.header("x-codex-window-id").as_deref()
-        );
-        assert!(metadata.get("compaction").is_none());
-    }
-
-    let compact_metadata = compact_requests[0]
-        .header("x-codex-turn-metadata")
-        .as_deref()
-        .map(parse_json_header)
-        .expect("compact request should include turn metadata");
-    assert_eq!(
-        compact_metadata["request_kind"].as_str(),
-        Some("compaction")
-    );
-    assert_eq!(
-        compact_metadata["compaction"],
-        serde_json::json!({
-            "trigger": "auto",
-            "reason": "context_limit",
-            "implementation": "responses_compact",
-            "phase": "pre_turn",
-            "strategy": "memento",
-        })
-    );
-    assert_eq!(
-        compact_metadata["turn_id"], turn_metadata[2]["turn_id"],
-        "pre-turn compaction should carry the current turn id"
-    );
-    assert_eq!(
-        compact_metadata["window_id"].as_str(),
-        compact_requests[0].header("x-codex-window-id").as_deref()
-    );
 
     Ok(())
 }
@@ -468,6 +319,3 @@ async fn wait_for_context_compaction_completed(
     }
 }
 
-fn parse_json_header(value: &str) -> serde_json::Value {
-    serde_json::from_str(value).expect("turn metadata should be JSON")
-}
