@@ -960,3 +960,136 @@ fn standalone_reasoning_item_produces_no_message() {
         Some("internal")
     );
 }
+
+/// Build a minimal chat-completions prompt with a system instruction and the
+/// given user turns.
+fn chat_prompt_with_users(instructions: &str, users: &[&str]) -> Prompt {
+    let input = users
+        .iter()
+        .map(|text| ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: (*text).to_string(),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        })
+        .collect();
+    Prompt {
+        input,
+        base_instructions: BaseInstructions {
+            text: instructions.to_string(),
+        },
+        ..Default::default()
+    }
+}
+
+/// Appending a user message must preserve the entire previous prefix: no reset,
+/// full prefix match, and no false system/tools change.
+#[test]
+fn request_layout_append_keeps_full_prefix() {
+    use crate::chat_completions_observability::CacheResetReason;
+    use crate::chat_completions_observability::ChatCompletionsLayoutComparison;
+    use crate::chat_completions_observability::ChatCompletionsRequestLayout;
+
+    let client = test_model_client(SessionSource::Cli);
+    let model_info = test_model_info();
+
+    let first_prompt = chat_prompt_with_users("sys", &["hello"]);
+    let first_request = client
+        .build_chat_completions_request(&first_prompt, &model_info)
+        .expect("first request builds");
+    let first_layout = ChatCompletionsRequestLayout::from_request(
+        &first_request.model,
+        &first_request.messages,
+        &first_request.tools,
+    );
+
+    let second_prompt = chat_prompt_with_users("sys", &["hello", "again"]);
+    let second_request = client
+        .build_chat_completions_request(&second_prompt, &model_info)
+        .expect("second request builds");
+    let second_layout = ChatCompletionsRequestLayout::from_request(
+        &second_request.model,
+        &second_request.messages,
+        &second_request.tools,
+    );
+
+    let comparison = ChatCompletionsLayoutComparison::new(Some(&first_layout), &second_layout);
+    assert!(!comparison.system_changed);
+    assert!(!comparison.tools_changed);
+    assert_eq!(comparison.reset_reason, CacheResetReason::None);
+    assert_eq!(
+        comparison.longest_matching_message_prefix,
+        first_request.messages.len()
+    );
+}
+
+/// Rewriting an earlier user turn breaks the append-only prefix and is reported
+/// as a history rewrite.
+#[test]
+fn request_layout_rewrite_reports_history_rewrite() {
+    use crate::chat_completions_observability::CacheResetReason;
+    use crate::chat_completions_observability::ChatCompletionsLayoutComparison;
+    use crate::chat_completions_observability::ChatCompletionsRequestLayout;
+
+    let client = test_model_client(SessionSource::Cli);
+    let model_info = test_model_info();
+
+    let before = client
+        .build_chat_completions_request(
+            &chat_prompt_with_users("sys", &["first", "second"]),
+            &model_info,
+        )
+        .expect("before request builds");
+    let after = client
+        .build_chat_completions_request(
+            &chat_prompt_with_users("sys", &["EDITED", "second"]),
+            &model_info,
+        )
+        .expect("after request builds");
+
+    let before_layout =
+        ChatCompletionsRequestLayout::from_request(&before.model, &before.messages, &before.tools);
+    let after_layout =
+        ChatCompletionsRequestLayout::from_request(&after.model, &after.messages, &after.tools);
+
+    let comparison = ChatCompletionsLayoutComparison::new(Some(&before_layout), &after_layout);
+    assert_eq!(comparison.reset_reason, CacheResetReason::HistoryRewritten);
+    // The system message (index 0) still matches; the edit is at index 1.
+    assert_eq!(comparison.longest_matching_message_prefix, 1);
+}
+
+/// The single most important invariant: observing the request must not mutate
+/// it. Serialize the exact request before and after `observe_request_layout`
+/// and require byte-for-byte-equal JSON.
+#[test]
+fn observation_does_not_alter_request_json() {
+    use crate::chat_completions_observability::observe_request_layout;
+
+    let client = test_model_client(SessionSource::Cli);
+    let model_info = test_model_info();
+    let request = client
+        .build_chat_completions_request(
+            &chat_prompt_with_users("sys", &["hello", "world"]),
+            &model_info,
+        )
+        .expect("request builds");
+
+    let before = serde_json::to_value(&request).expect("serialize before");
+
+    let _layout = observe_request_layout(
+        /*previous*/ None,
+        &request.model,
+        &request.messages,
+        &request.tools,
+        /*effective_context_window*/ Some(272_000),
+    );
+
+    let after = serde_json::to_value(&request).expect("serialize after");
+    assert_eq!(
+        before, after,
+        "observation must not change the request JSON"
+    );
+}

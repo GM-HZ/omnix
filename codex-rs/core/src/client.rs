@@ -107,6 +107,8 @@ use tracing::warn;
 use crate::attestation::AttestationContext;
 use crate::attestation::AttestationProvider;
 use crate::attestation::X_OAI_ATTESTATION_HEADER;
+use crate::chat_completions_observability::ChatCompletionsRequestLayout;
+use crate::chat_completions_observability::observe_request_layout;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
@@ -206,6 +208,10 @@ struct ModelClientState {
     disable_websockets: AtomicBool,
     agent_identity_session_fallback: AgentIdentitySessionFallback,
     cached_websocket_session: StdMutex<WebsocketSession>,
+    /// Previous Chat Completions request layout for this session, used to
+    /// observe prompt-cache prefix stability across turns. Observation only;
+    /// never affects the request that is sent.
+    previous_chat_completions_layout: StdMutex<Option<ChatCompletionsRequestLayout>>,
 }
 
 /// Resolved API client setup for a single request attempt.
@@ -434,6 +440,7 @@ impl ModelClient {
                 disable_websockets: AtomicBool::new(false),
                 agent_identity_session_fallback: AgentIdentitySessionFallback::default(),
                 cached_websocket_session: StdMutex::new(WebsocketSession::default()),
+                previous_chat_completions_layout: StdMutex::new(None),
             }),
             agent_identity_policy,
             prompt_cache_key_override: None,
@@ -1558,6 +1565,29 @@ impl ModelClientSession {
         let request = self
             .client
             .build_chat_completions_request(prompt, model_info)?;
+
+        // Observe the prompt-cache prefix stability of the exact request we are
+        // about to serialize. This reads the request by reference and never
+        // mutates it, so the bytes on the wire are unchanged.
+        {
+            let effective_context_window = model_info
+                .context_window
+                .map(|window| window * model_info.effective_context_window_percent / 100);
+            let mut previous_layout = self
+                .client
+                .state
+                .previous_chat_completions_layout
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let new_layout = observe_request_layout(
+                previous_layout.as_ref(),
+                &request.model,
+                &request.messages,
+                &request.tools,
+                effective_context_window,
+            );
+            *previous_layout = Some(new_layout);
+        }
 
         let request_telemetry_ctx = AuthRequestTelemetryContext::new(
             client_setup.auth.as_ref().map(CodexAuth::auth_mode),

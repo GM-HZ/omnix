@@ -18,17 +18,13 @@
 //!   fingerprint unchanged can still silently invalidate the provider cache.
 //!   Divergence between the two views is exactly that silent cache-kill.
 
-// The layout/comparison types are exercised by this module's unit tests but not
-// consumed by production code until the client wires observation in (Task 3);
-// the allow is removed there.
-#![allow(dead_code)]
-
 use std::fmt::Write as _;
 
 use serde_json::Value;
 use serde_json::json;
 use sha2::Digest;
 use sha2::Sha256;
+use tracing::debug;
 
 /// Why the cacheable request prefix changed relative to the previous request.
 ///
@@ -55,6 +51,7 @@ pub(crate) enum CacheResetReason {
 ///
 /// Every field is either a count or a 16-hex-character digest; none of them can
 /// reconstruct prompt or tool content.
+#[derive(Debug, Clone)]
 pub(crate) struct ChatCompletionsRequestLayout {
     pub(crate) model: String,
     pub(crate) message_count: usize,
@@ -195,6 +192,46 @@ impl ChatCompletionsLayoutComparison {
 /// Length of the shared leading run of two fingerprint vectors.
 fn common_prefix_len(a: &[String], b: &[String]) -> usize {
     a.iter().zip(b).take_while(|(x, y)| x == y).count()
+}
+
+/// Compute the layout of the exact request about to be serialized, compare it
+/// to the previous request in this session, and emit a `chat_completions.request_layout`
+/// debug event. Returns the new layout so the caller can store it as the next
+/// comparison baseline.
+///
+/// This is pure observation: it reads `model`/`messages`/`tools` by reference
+/// and never mutates them, so the request that streams is byte-identical to
+/// what it would have been without this call.
+pub(crate) fn observe_request_layout(
+    previous: Option<&ChatCompletionsRequestLayout>,
+    model: &str,
+    messages: &[Value],
+    tools: &[Value],
+    effective_context_window: Option<i64>,
+) -> ChatCompletionsRequestLayout {
+    let current = ChatCompletionsRequestLayout::from_request(model, messages, tools);
+    let comparison = ChatCompletionsLayoutComparison::new(previous, &current);
+
+    debug!(
+        target: "chat_completions.request_layout",
+        model = %current.model,
+        message_count = current.message_count,
+        tool_count = current.tool_count,
+        system_fingerprint = current.system_fingerprint.as_deref().unwrap_or("none"),
+        tools_fingerprint = %current.tools_fingerprint,
+        request_fingerprint = %current.request_fingerprint,
+        wire_fingerprint = %current.wire_fingerprint,
+        previous_message_count = comparison.previous_message_count,
+        longest_matching_message_prefix = comparison.longest_matching_message_prefix,
+        system_changed = comparison.system_changed,
+        tools_changed = comparison.tools_changed,
+        serialization_reordered = comparison.serialization_reordered,
+        reset_reason = ?comparison.reset_reason,
+        effective_context_window = effective_context_window.unwrap_or(0),
+        "observed chat completions request layout"
+    );
+
+    current
 }
 
 /// Canonical fingerprint: object keys are sorted recursively before hashing so
