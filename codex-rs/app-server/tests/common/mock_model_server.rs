@@ -1,6 +1,7 @@
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
+use core_test_support::chat_completions;
 use core_test_support::responses;
 use wiremock::Mock;
 use wiremock::MockServer;
@@ -79,4 +80,61 @@ pub async fn create_mock_responses_server_repeating_assistant(message: &str) -> 
         .mount(&server)
         .await;
     server
+}
+
+/// Create a mock server that serves the given Chat Completions SSE bodies, in
+/// order, for POSTs to `/v1/chat/completions`. This is the DeepSeek wire path.
+pub async fn create_mock_chat_completions_server_sequence(bodies: Vec<String>) -> MockServer {
+    let server = responses::start_mock_server().await;
+
+    let num_calls = bodies.len();
+    let seq_responder = ChatSeqResponder {
+        num_calls: AtomicUsize::new(0),
+        responses: bodies,
+    };
+
+    Mock::given(method("POST"))
+        .and(path_regex(".*/chat/completions$"))
+        .respond_with(seq_responder)
+        .expect(num_calls as u64)
+        .mount(&server)
+        .await;
+
+    server
+}
+
+/// Create a mock Chat Completions server returning a single assistant text turn
+/// for every request (unbounded), for lifecycle smokes that do not care about
+/// exact call counts.
+pub async fn create_mock_chat_completions_server_repeating_text(message: &str) -> MockServer {
+    let server = responses::start_mock_server().await;
+    let body = chat_completions::cc_text_turn("cc-1", message, /*prompt*/ 10, /*completion*/ 4);
+    Mock::given(method("POST"))
+        .and(path_regex(".*/chat/completions$"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(body),
+        )
+        .mount(&server)
+        .await;
+    server
+}
+
+struct ChatSeqResponder {
+    num_calls: AtomicUsize,
+    responses: Vec<String>,
+}
+
+impl Respond for ChatSeqResponder {
+    fn respond(&self, _: &wiremock::Request) -> ResponseTemplate {
+        let call_num = self.num_calls.fetch_add(1, Ordering::SeqCst);
+        let response = self
+            .responses
+            .get(call_num)
+            .expect("mock chat completions response should exist");
+        ResponseTemplate::new(200)
+            .insert_header("content-type", "text/event-stream")
+            .set_body_string(response.clone())
+    }
 }
