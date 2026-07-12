@@ -211,11 +211,101 @@ fn fingerprints_do_not_leak_content() {
     if let Some(sys) = &layout.system_fingerprint {
         all_fps.push(sys.clone());
     }
-    all_fps.extend(layout.message_prefix_fingerprints.iter().cloned());
+    all_fps.extend(layout.message_fingerprints.iter().cloned());
+    all_fps.extend(layout.message_wire_fingerprints.iter().cloned());
 
     for fp in &all_fps {
         assert_hex16(fp);
         assert!(!fp.contains(PROMPT_SECRET));
         assert!(!fp.contains(TOOL_SECRET));
     }
+}
+
+/// Fingerprints are per-message (one entry per message), not per cumulative
+/// prefix. This is what makes observation O(n) rather than O(n²).
+#[test]
+fn fingerprints_are_one_per_message() {
+    let messages = vec![
+        json!({"role": "system", "content": "sys"}),
+        json!({"role": "user", "content": "a"}),
+        json!({"role": "assistant", "content": "b"}),
+    ];
+    let layout = ChatCompletionsRequestLayout::from_request("deepseek-chat", &messages, &[]);
+    assert_eq!(layout.message_fingerprints.len(), messages.len());
+    assert_eq!(layout.message_wire_fingerprints.len(), messages.len());
+
+    // Identical messages at different positions hash identically (per-message,
+    // position-independent), unlike cumulative-prefix hashing.
+    let dup = ChatCompletionsRequestLayout::from_request(
+        "deepseek-chat",
+        &[
+            json!({"role": "user", "content": "same"}),
+            json!({"role": "user", "content": "same"}),
+        ],
+        &[],
+    );
+    assert_eq!(dup.message_fingerprints[0], dup.message_fingerprints[1]);
+}
+
+/// Appending a message leaves every earlier per-message fingerprint untouched,
+/// so the common-prefix length equals the previous message count.
+#[test]
+fn appending_preserves_earlier_message_fingerprints() {
+    let before = ChatCompletionsRequestLayout::from_request(
+        "deepseek-chat",
+        &[
+            json!({"role": "system", "content": "sys"}),
+            json!({"role": "user", "content": "first"}),
+        ],
+        &[],
+    );
+    let after = ChatCompletionsRequestLayout::from_request(
+        "deepseek-chat",
+        &[
+            json!({"role": "system", "content": "sys"}),
+            json!({"role": "user", "content": "first"}),
+            json!({"role": "assistant", "content": "second"}),
+        ],
+        &[],
+    );
+    assert_eq!(
+        after.message_fingerprints[..before.message_fingerprints.len()],
+        before.message_fingerprints[..]
+    );
+}
+
+/// The whole-request fingerprint is folded from components: it changes when any
+/// message changes, when a message is appended, and when the model changes.
+#[test]
+fn request_fingerprint_reflects_component_changes() {
+    let base = ChatCompletionsRequestLayout::from_request(
+        "deepseek-chat",
+        &[json!({"role": "user", "content": "a"})],
+        &[],
+    );
+    let changed_message = ChatCompletionsRequestLayout::from_request(
+        "deepseek-chat",
+        &[json!({"role": "user", "content": "b"})],
+        &[],
+    );
+    let appended = ChatCompletionsRequestLayout::from_request(
+        "deepseek-chat",
+        &[
+            json!({"role": "user", "content": "a"}),
+            json!({"role": "user", "content": "c"}),
+        ],
+        &[],
+    );
+    let changed_model = ChatCompletionsRequestLayout::from_request(
+        "qwen-max",
+        &[json!({"role": "user", "content": "a"})],
+        &[],
+    );
+
+    assert_ne!(
+        base.request_fingerprint,
+        changed_message.request_fingerprint
+    );
+    assert_ne!(base.request_fingerprint, appended.request_fingerprint);
+    assert_ne!(base.request_fingerprint, changed_model.request_fingerprint);
 }

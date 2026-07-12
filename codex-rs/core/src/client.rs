@@ -1567,13 +1567,22 @@ impl ModelClientSession {
             .build_chat_completions_request(prompt, model_info)?;
 
         // Observe the prompt-cache prefix stability of the exact request we are
-        // about to serialize. This reads the request by reference and never
-        // mutates it, so the bytes on the wire are unchanged.
-        {
+        // about to serialize, but only when the request-layout debug target is
+        // enabled: the fingerprinting is O(n) in message count and must not run
+        // on the hot path otherwise. This reads the request by reference and
+        // never mutates it, so the bytes on the wire are unchanged. The new
+        // layout is held and committed as the next comparison baseline only
+        // after the request successfully starts streaming (below), so a request
+        // that fails before establishing a provider cache entry cannot poison
+        // the next comparison.
+        let pending_layout = if tracing::enabled!(
+            target: "chat_completions.request_layout",
+            tracing::Level::DEBUG
+        ) {
             let effective_context_window = model_info
                 .context_window
                 .map(|window| window * model_info.effective_context_window_percent / 100);
-            let mut previous_layout = self
+            let previous_layout = self
                 .client
                 .state
                 .previous_chat_completions_layout
@@ -1586,8 +1595,11 @@ impl ModelClientSession {
                 &request.tools,
                 effective_context_window,
             );
-            *previous_layout = Some(new_layout);
-        }
+            drop(previous_layout);
+            Some(new_layout)
+        } else {
+            None
+        };
 
         let request_telemetry_ctx = AuthRequestTelemetryContext::new(
             client_setup.auth.as_ref().map(CodexAuth::auth_mode),
@@ -1611,6 +1623,17 @@ impl ModelClientSession {
             .stream_request(request, headers)
             .await
             .map_err(|e| self.client.state.provider.map_api_error(e))?;
+
+        // The request started streaming successfully, so it is a valid cache
+        // baseline for the next turn's comparison.
+        if let Some(new_layout) = pending_layout {
+            *self
+                .client
+                .state
+                .previous_chat_completions_layout
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(new_layout);
+        }
         let (stream, _) = map_response_stream(
             api_stream,
             session_telemetry.clone(),

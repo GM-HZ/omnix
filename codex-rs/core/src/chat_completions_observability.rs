@@ -21,7 +21,6 @@
 use std::fmt::Write as _;
 
 use serde_json::Value;
-use serde_json::json;
 use sha2::Digest;
 use sha2::Sha256;
 use tracing::debug;
@@ -51,6 +50,13 @@ pub(crate) enum CacheResetReason {
 ///
 /// Every field is either a count or a 16-hex-character digest; none of them can
 /// reconstruct prompt or tool content.
+///
+/// Fingerprints are computed **per message** (each message hashed once), not
+/// per cumulative prefix. Comparing per-message fingerprint vectors index by
+/// index yields the identical longest-matching-prefix result as hashing every
+/// growing prefix would — the first differing message is the cutoff either way
+/// — but costs O(n) instead of O(n²), so a long conversation does not re-hash
+/// its entire history on every turn.
 #[derive(Debug, Clone)]
 pub(crate) struct ChatCompletionsRequestLayout {
     pub(crate) model: String,
@@ -60,13 +66,15 @@ pub(crate) struct ChatCompletionsRequestLayout {
     pub(crate) system_fingerprint: Option<String>,
     /// Canonical fingerprint of the whole tools array (order-sensitive).
     pub(crate) tools_fingerprint: String,
-    /// Canonical fingerprint of messages `0..=i` for each index `i`.
-    pub(crate) message_prefix_fingerprints: Vec<String>,
-    /// Wire (exact-bytes) fingerprint of messages `0..=i` for each index `i`.
-    pub(crate) message_prefix_wire_fingerprints: Vec<String>,
-    /// Canonical fingerprint of the entire `{model, messages, tools}` layout.
+    /// Canonical fingerprint of each message, in order.
+    pub(crate) message_fingerprints: Vec<String>,
+    /// Wire (exact-bytes) fingerprint of each message, in order.
+    pub(crate) message_wire_fingerprints: Vec<String>,
+    /// Canonical fingerprint of the entire `{model, messages, tools}` layout,
+    /// folded from the per-component fingerprints (O(n), no full re-serialize).
     pub(crate) request_fingerprint: String,
-    /// Wire (exact-bytes) fingerprint of the entire layout.
+    /// Wire (exact-bytes) fingerprint of the entire layout, folded from the
+    /// per-component wire fingerprints.
     pub(crate) wire_fingerprint: String,
 }
 
@@ -82,22 +90,20 @@ impl ChatCompletionsRequestLayout {
 
         let tools_value = Value::Array(tools.to_vec());
         let tools_fingerprint = fingerprint(&tools_value);
+        let tools_wire_fingerprint = wire_fingerprint(&tools_value);
 
-        let mut message_prefix_fingerprints = Vec::with_capacity(messages.len());
-        let mut message_prefix_wire_fingerprints = Vec::with_capacity(messages.len());
-        for end in 0..messages.len() {
-            let prefix = Value::Array(messages[..=end].to_vec());
-            message_prefix_fingerprints.push(fingerprint(&prefix));
-            message_prefix_wire_fingerprints.push(wire_fingerprint(&prefix));
-        }
+        // O(n): hash each message exactly once.
+        let message_fingerprints: Vec<String> = messages.iter().map(fingerprint).collect();
+        let message_wire_fingerprints: Vec<String> =
+            messages.iter().map(wire_fingerprint).collect();
 
-        let request_value = json!({
-            "model": model,
-            "messages": messages,
-            "tools": tools,
-        });
-        let request_fingerprint = fingerprint(&request_value);
-        let request_wire_fingerprint = wire_fingerprint(&request_value);
+        // Fold the whole-request fingerprints from the components rather than
+        // re-serializing the entire request. Each folded fingerprint changes
+        // iff any component changes and is order-sensitive.
+        let request_fingerprint =
+            fold_fingerprints(model, &tools_fingerprint, &message_fingerprints);
+        let wire_fingerprint_value =
+            fold_fingerprints(model, &tools_wire_fingerprint, &message_wire_fingerprints);
 
         Self {
             model: model.to_string(),
@@ -105,10 +111,10 @@ impl ChatCompletionsRequestLayout {
             tool_count: tools.len(),
             system_fingerprint,
             tools_fingerprint,
-            message_prefix_fingerprints,
-            message_prefix_wire_fingerprints,
+            message_fingerprints,
+            message_wire_fingerprints,
             request_fingerprint,
-            wire_fingerprint: request_wire_fingerprint,
+            wire_fingerprint: wire_fingerprint_value,
         }
     }
 }
@@ -149,12 +155,12 @@ impl ChatCompletionsLayoutComparison {
         let tools_changed = previous.tools_fingerprint != current.tools_fingerprint;
 
         let longest_matching_message_prefix = common_prefix_len(
-            &previous.message_prefix_fingerprints,
-            &current.message_prefix_fingerprints,
+            &previous.message_fingerprints,
+            &current.message_fingerprints,
         );
         let longest_matching_wire_prefix = common_prefix_len(
-            &previous.message_prefix_wire_fingerprints,
-            &current.message_prefix_wire_fingerprints,
+            &previous.message_wire_fingerprints,
+            &current.message_wire_fingerprints,
         );
         let previous_message_count = previous.message_count;
 
@@ -247,6 +253,30 @@ pub(crate) fn fingerprint(value: &Value) -> String {
 pub(crate) fn wire_fingerprint(value: &Value) -> String {
     let serialized = serde_json::to_string(value).unwrap_or_default();
     sha16(serialized.as_bytes())
+}
+
+/// Fold the model slug, tools fingerprint, and per-message fingerprints into a
+/// single whole-request fingerprint. Order-sensitive (a length-prefixed,
+/// delimited stream), so it changes iff any component or the message order
+/// changes — without re-serializing the entire request.
+fn fold_fingerprints(
+    model: &str,
+    tools_fingerprint: &str,
+    message_fingerprints: &[String],
+) -> String {
+    let mut acc = String::with_capacity(
+        model.len() + tools_fingerprint.len() + message_fingerprints.len() * 17,
+    );
+    let _ = write!(
+        acc,
+        "m:{model}|t:{tools_fingerprint}|n:{}",
+        message_fingerprints.len()
+    );
+    for fp in message_fingerprints {
+        acc.push('|');
+        acc.push_str(fp);
+    }
+    sha16(acc.as_bytes())
 }
 
 /// Serialize `value` with object keys sorted recursively. This is a stable

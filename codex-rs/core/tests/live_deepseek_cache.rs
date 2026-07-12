@@ -192,8 +192,11 @@ struct CacheRow {
     prompt_tokens: u64,
     hit_tokens: u64,
     miss_tokens: u64,
-    /// Effective context window reported for the model, when known.
-    effective_context_window: Option<i64>,
+    /// The model's real context window when known (harness rows). `None` for
+    /// the control scenario, which has no `ModelInfo` — the control's sizing
+    /// guardrail is reported separately as `profile_guardrail_tokens`, never
+    /// mixed into this column.
+    model_context_window: Option<i64>,
 }
 
 impl CacheRow {
@@ -227,6 +230,19 @@ fn scenario_steady_state_hit_rate(rows: &[CacheRow], scenario: &str) -> Option<f
     aggregate_steady_state_hit_rate(&scoped)
 }
 
+/// Total steady-state miss tokens for a single scenario, warm-up excluded.
+///
+/// Miss tokens are the comparability-safe cross-scenario signal: unlike hit
+/// *percentages* (which depend on each scenario's stable-prefix length), an
+/// absolute count of prompt tokens that had to be re-processed is meaningful on
+/// its own and can be compared per turn.
+fn scenario_steady_state_miss_tokens(rows: &[CacheRow], scenario: &str) -> u64 {
+    rows.iter()
+        .filter(|r| r.scenario == scenario && r.phase == Phase::SteadyState)
+        .map(|r| r.miss_tokens)
+        .sum()
+}
+
 /// Observed layout stability during the harness run, correlated from the
 /// `chat_completions.request_layout` diagnostics. These flags let the diagnosis
 /// distinguish "provider is flaky" from "our harness is breaking the prefix".
@@ -258,18 +274,28 @@ enum CacheDiagnosis {
     WithinTolerance,
 }
 
-/// Gap (in percentage points) at or above which we treat the harness as
-/// materially worse than the control.
-const GAP_THRESHOLD_POINTS: f64 = 5.0;
-/// Hit rate the control must reach before we trust it as a healthy baseline.
-const HEALTHY_CONTROL_HIT_RATE: f64 = 0.90;
-
-/// Apply the decision matrix to measured rates and observed layout signals.
+/// Minimum steady-state hit rate for a scenario to count as caching healthily.
 ///
-/// Rates are token-weighted steady-state hit rates in `[0, 1]`. The order of
-/// checks encodes precedence: provider health first (nothing else matters if
-/// the control can't cache), then expected resets, then the specific layout
-/// instabilities, then the stable-but-gapped fallback.
+/// Both scenarios are judged against this same absolute bar. We deliberately do
+/// NOT subtract the harness rate from the control rate: the control sends a
+/// short fixed document with no tools (~1.4K prompt tokens) while the harness
+/// carries the full Codex system prompt, tools, and a growing history (~3K+),
+/// so their hit *percentages* are not directly comparable — a higher harness
+/// percentage would not prove the harness avoids extra misses, and a lower one
+/// would not prove it causes them. Comparing each against an absolute bar, plus
+/// the per-scenario miss-token counts in the report, avoids that trap.
+const HEALTHY_HIT_RATE: f64 = 0.90;
+
+/// Apply the decision matrix to measured per-scenario rates and observed layout
+/// signals.
+///
+/// Rates are token-weighted steady-state hit rates in `[0, 1]`. Precedence:
+/// 1. If the control cannot cache, nothing is attributable to the harness.
+/// 2. A post-compaction sample is an expected reset regardless of rate.
+/// 3. If the harness caches healthily on its own bar, we are done — the
+///    provider caches and so do we.
+/// 4. Otherwise the provider caches but the harness does not: attribute to the
+///    observed layout instability (tools, then history, then serialization).
 fn diagnose(
     control_hit_rate: Option<f64>,
     harness_hit_rate: Option<f64>,
@@ -277,39 +303,48 @@ fn diagnose(
 ) -> CacheDiagnosis {
     let control = control_hit_rate.unwrap_or(0.0);
     let harness = harness_hit_rate.unwrap_or(0.0);
-    let gap_points = (control - harness) * 100.0;
 
-    if control < HEALTHY_CONTROL_HIT_RATE {
+    // The control establishes whether the provider caches stable prefixes at
+    // all. If it does not, nothing can be attributed to the harness.
+    if control < HEALTHY_HIT_RATE {
         return CacheDiagnosis::ProviderVariability;
     }
+
+    // A post-compaction sample is an expected reset regardless of rate.
     if signals.post_compaction_sample {
         return CacheDiagnosis::ExpectedCacheReset;
     }
-    if gap_points >= GAP_THRESHOLD_POINTS {
-        if signals.tools_changed_during_turns {
-            return CacheDiagnosis::ToolLayoutInstability;
-        }
-        if signals.history_rewritten_during_turns {
-            return CacheDiagnosis::HistoryLayoutInstability;
-        }
-        return CacheDiagnosis::SerializationOrProviderBehavior;
+
+    // The provider caches; judge the harness on its OWN absolute health rather
+    // than on a percentage subtracted from the control. If the harness also
+    // caches healthily, we are done.
+    if harness >= HEALTHY_HIT_RATE {
+        return CacheDiagnosis::WithinTolerance;
     }
-    CacheDiagnosis::WithinTolerance
+
+    // Provider caches, but the harness does not — attribute to layout.
+    if signals.tools_changed_during_turns {
+        return CacheDiagnosis::ToolLayoutInstability;
+    }
+    if signals.history_rewritten_during_turns {
+        return CacheDiagnosis::HistoryLayoutInstability;
+    }
+    CacheDiagnosis::SerializationOrProviderBehavior
 }
 
 /// Render a human-readable table of all rows.
 fn render_table(rows: &[CacheRow]) -> String {
     let mut out = String::new();
     out.push_str(
-        "scenario        phase         round  prompt    hit       miss      hit_rate  eff_ctx\n",
+        "scenario        phase         round  prompt    hit       miss      hit_rate  model_ctx\n",
     );
     for row in rows {
         let hit_rate = row
             .hit_rate()
             .map(|r| format!("{r:.3}"))
             .unwrap_or_else(|| "n/a".to_string());
-        let eff_ctx = row
-            .effective_context_window
+        let model_ctx = row
+            .model_context_window
             .map(|w| w.to_string())
             .unwrap_or_else(|| "n/a".to_string());
         out.push_str(&format!(
@@ -321,13 +356,18 @@ fn render_table(rows: &[CacheRow]) -> String {
             row.hit_tokens,
             row.miss_tokens,
             hit_rate,
-            eff_ctx,
+            model_ctx,
         ));
     }
     out
 }
 
-/// Render all rows plus the steady-state aggregate as a JSON object.
+/// Render all rows plus per-scenario aggregates as a JSON object.
+///
+/// Cross-scenario comparison uses absolute steady-state **miss tokens** and
+/// each scenario's own hit rate, never a subtraction of the two hit
+/// percentages — the control and harness carry different stable-prefix lengths,
+/// so their percentages are not directly comparable.
 fn render_json(rows: &[CacheRow]) -> serde_json::Value {
     let row_values: Vec<serde_json::Value> = rows
         .iter()
@@ -340,13 +380,16 @@ fn render_json(rows: &[CacheRow]) -> serde_json::Value {
                 "hit_tokens": row.hit_tokens,
                 "miss_tokens": row.miss_tokens,
                 "hit_rate": row.hit_rate(),
-                "effective_context_window": row.effective_context_window,
+                "model_context_window": row.model_context_window,
             })
         })
         .collect();
     serde_json::json!({
         "rows": row_values,
         "steady_state_hit_rate": aggregate_steady_state_hit_rate(rows),
+        "control_steady_state_miss_tokens": scenario_steady_state_miss_tokens(rows, "control"),
+        "harness_steady_state_miss_tokens": scenario_steady_state_miss_tokens(rows, "harness"),
+        "comparability_note": "hit rates are per-scenario and not directly comparable across scenarios (different stable-prefix lengths); compare absolute miss tokens instead",
     })
 }
 
@@ -425,7 +468,7 @@ mod tests {
             prompt_tokens: hit + miss,
             hit_tokens: hit,
             miss_tokens: miss,
-            effective_context_window: Some(60_000),
+            model_context_window: Some(60_000),
         }
     }
 
@@ -457,10 +500,30 @@ mod tests {
         let table = render_table(&rows);
         assert!(table.contains("warmup"));
         assert!(table.contains("steady_state"));
+        assert!(table.contains("model_ctx"));
 
         let json = render_json(&rows);
         assert_eq!(json["rows"].as_array().expect("rows array").len(), 2);
         assert!(json["steady_state_hit_rate"].is_number());
+        // Comparability-safe cross-scenario signals are present.
+        assert!(json["control_steady_state_miss_tokens"].is_number());
+        assert!(json["harness_steady_state_miss_tokens"].is_number());
+        assert!(json["comparability_note"].is_string());
+        // Rows expose the model window (not a guardrail) under its own key.
+        assert!(json["rows"][0].get("model_context_window").is_some());
+    }
+
+    #[test]
+    fn miss_tokens_are_summed_per_scenario_warmup_excluded() {
+        let rows = vec![
+            row("control", Phase::Warmup, 0, 0, 500),
+            row("control", Phase::SteadyState, 1, 900, 100),
+            row("control", Phase::SteadyState, 2, 800, 200),
+            row("harness", Phase::SteadyState, 1, 950, 50),
+        ];
+        // Warm-up 500 excluded; 100 + 200 = 300.
+        assert_eq!(scenario_steady_state_miss_tokens(&rows, "control"), 300);
+        assert_eq!(scenario_steady_state_miss_tokens(&rows, "harness"), 50);
     }
 
     #[test]
@@ -496,6 +559,9 @@ mod tests {
 
     #[test]
     fn diagnosis_low_control_blames_provider() {
+        // Control below the health bar: the provider is not caching stable
+        // prefixes, so nothing is attributable to the harness — even with every
+        // layout signal set.
         assert_eq!(
             diagnose(Some(0.40), Some(0.10), signals(true, true, true, false)),
             CacheDiagnosis::ProviderVariability
@@ -503,7 +569,9 @@ mod tests {
     }
 
     #[test]
-    fn diagnosis_healthy_control_gap_with_tool_change() {
+    fn diagnosis_provider_caches_harness_unhealthy_with_tool_change() {
+        // Provider caches (control healthy) but the harness misses on its own
+        // absolute bar, with tool layout changing across turns.
         assert_eq!(
             diagnose(Some(0.95), Some(0.60), signals(true, false, false, false)),
             CacheDiagnosis::ToolLayoutInstability
@@ -511,7 +579,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnosis_healthy_control_gap_with_history_rewrite() {
+    fn diagnosis_provider_caches_harness_unhealthy_with_history_rewrite() {
         assert_eq!(
             diagnose(Some(0.95), Some(0.60), signals(false, false, true, false)),
             CacheDiagnosis::HistoryLayoutInstability
@@ -520,8 +588,8 @@ mod tests {
 
     #[test]
     fn diagnosis_post_compaction_is_expected_reset() {
-        // Even with a large gap, a post-compaction sample is an expected reset,
-        // and it takes precedence over layout-instability classification.
+        // A post-compaction sample is an expected reset and takes precedence
+        // over layout-instability classification, even at a low harness rate.
         assert_eq!(
             diagnose(Some(0.95), Some(0.10), signals(true, true, true, true)),
             CacheDiagnosis::ExpectedCacheReset
@@ -529,7 +597,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnosis_stable_fingerprints_with_gap_is_serialization_or_provider() {
+    fn diagnosis_stable_fingerprints_but_harness_unhealthy_is_serialization_or_provider() {
         assert_eq!(
             diagnose(Some(0.95), Some(0.60), signals(false, false, false, false)),
             CacheDiagnosis::SerializationOrProviderBehavior
@@ -537,11 +605,30 @@ mod tests {
     }
 
     #[test]
-    fn diagnosis_small_gap_is_within_tolerance() {
-        // 95% control vs 92% harness = 3-point gap, below the 5-point threshold.
+    fn diagnosis_both_scenarios_healthy_is_within_tolerance() {
+        // Each scenario clears the absolute health bar on its own; no gap
+        // subtraction is involved.
         assert_eq!(
             diagnose(Some(0.95), Some(0.92), signals(true, true, true, false)),
             CacheDiagnosis::WithinTolerance
+        );
+    }
+
+    #[test]
+    fn diagnosis_ignores_raw_percentage_gap_between_scenarios() {
+        // The harness percentage exceeding the control percentage must NOT be
+        // read as proof of anything: the two workloads have different stable
+        // prefix lengths. Both healthy on their own bar => WithinTolerance.
+        assert_eq!(
+            diagnose(Some(0.93), Some(0.98), signals(false, false, false, false)),
+            CacheDiagnosis::WithinTolerance
+        );
+        // And a harness far above an unhealthy control is still ProviderVariability:
+        // if the provider itself is not caching the control, the harness number
+        // cannot be trusted as evidence the harness is fine.
+        assert_eq!(
+            diagnose(Some(0.50), Some(0.98), signals(false, false, false, false)),
+            CacheDiagnosis::ProviderVariability
         );
     }
 }
@@ -579,9 +666,10 @@ mod live {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    /// Effective context window we report for the control rows. The control has
-    /// no ModelInfo, so we surface the profile guardrail as the window bound.
-    const CONTROL_EFFECTIVE_CONTEXT_WINDOW: i64 = MAX_EFFECTIVE_CONTEXT_WINDOW_TOKENS as i64;
+    /// The control has no `ModelInfo`, so its rows carry `model_context_window:
+    /// None`; the profile's sizing guardrail is reported separately as
+    /// `profile_guardrail_tokens` and never conflated with a model window.
+    const PROFILE_GUARDRAIL_TOKENS: i64 = MAX_EFFECTIVE_CONTEXT_WINDOW_TOKENS as i64;
 
     fn provider(base_url: &str) -> codex_api::Provider {
         codex_api::Provider {
@@ -762,7 +850,7 @@ mod live {
             prompt_tokens: prompt,
             hit_tokens: hit,
             miss_tokens: miss,
-            effective_context_window: context_window,
+            model_context_window: context_window,
         }
     }
 
@@ -855,23 +943,29 @@ mod live {
         let warmup_prompt = format!("{document}\n\n{}", round_question(0));
         let (usage, ctx) = run_harness_turn(&test.codex, &warmup_prompt).await;
         rows.push(usage_to_row("harness", Phase::Warmup, 0, &usage, ctx));
-        let mut last_context_window = ctx;
         tokio::time::sleep(config.warmup).await;
 
         // Steady-state turns reuse the same thread; only the question varies.
+        // Detect compaction from an actual prompt-token DROP between successive
+        // rounds: within a single reused thread the prompt only grows as history
+        // accumulates, so a decrease means the history was compacted (or an
+        // earlier turn was rewritten), which resets the cacheable prefix. The
+        // model's context window is capacity and stays constant, so it cannot
+        // serve as this signal. A HistoryRewritten layout reset (captured via
+        // tracing) corroborates the same event.
+        let mut previous_prompt_tokens: Option<u64> = None;
         for round in 1..=config.steady_state_rounds {
             let (usage, ctx) = run_harness_turn(&test.codex, &round_question(round)).await;
-            // Segment on context-window generation change (a proxy for
-            // compaction having reset the cacheable prefix).
-            let post_compaction = ctx != last_context_window && last_context_window.is_some();
-            if post_compaction {
+            let prompt_tokens = usage.input_tokens.max(0) as u64;
+            let compacted = previous_prompt_tokens.is_some_and(|prev| prompt_tokens < prev);
+            if compacted {
                 capture
                     .signals
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .post_compaction_sample = true;
             }
-            last_context_window = ctx;
+            previous_prompt_tokens = Some(prompt_tokens);
             rows.push(usage_to_row(
                 "harness",
                 Phase::SteadyState,
@@ -893,6 +987,12 @@ mod live {
         let mut report = render_json(&rows);
         report["control_steady_state_hit_rate"] = serde_json::json!(control_rate);
         report["harness_steady_state_hit_rate"] = serde_json::json!(harness_rate);
+        report["profile_guardrail_tokens"] = serde_json::json!(PROFILE_GUARDRAIL_TOKENS);
+        report["tools_changed_during_turns"] =
+            serde_json::json!(signals.tools_changed_during_turns);
+        report["history_rewritten_during_turns"] =
+            serde_json::json!(signals.history_rewritten_during_turns);
+        report["post_compaction_sample"] = serde_json::json!(signals.post_compaction_sample);
         report["diagnosis"] = serde_json::json!(format!("{diagnosis:?}"));
         println!(
             "{}",
@@ -926,7 +1026,7 @@ mod live {
             prompt_tokens: prompt,
             hit_tokens: hit,
             miss_tokens: miss,
-            effective_context_window: Some(CONTROL_EFFECTIVE_CONTEXT_WINDOW),
+            model_context_window: None,
         });
         tokio::time::sleep(config.warmup).await;
 
@@ -943,7 +1043,7 @@ mod live {
                 prompt_tokens: prompt,
                 hit_tokens: hit,
                 miss_tokens: miss,
-                effective_context_window: Some(CONTROL_EFFECTIVE_CONTEXT_WINDOW),
+                model_context_window: None,
             });
         }
     }
