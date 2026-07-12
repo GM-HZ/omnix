@@ -9,6 +9,7 @@ mod apply_patch;
 mod apps;
 mod client;
 mod client_common;
+mod chat_completions_observability;
 mod realtime_context;
 mod realtime_conversation;
 mod realtime_prompt;
