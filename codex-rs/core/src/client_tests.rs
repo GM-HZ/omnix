@@ -1147,6 +1147,9 @@ fn deepseek_thinking_mapping_matches_runtime_0_0_contract() {
 
     // Unknown/custom effort and absent level leave thinking unset (the request
     // omits the field rather than guessing).
-    assert_eq!(thinking_json(Some(ReasoningEffort::Custom("weird".into()))), None);
+    assert_eq!(
+        thinking_json(Some(ReasoningEffort::Custom("weird".into()))),
+        None
+    );
     assert_eq!(thinking_json(None), None);
 }
