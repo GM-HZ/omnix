@@ -293,3 +293,103 @@ async fn chat_completions_auto_compact_then_continue() {
         "expected exactly one auto-compaction request on the chat path"
     );
 }
+
+/// B5: persist → stop → resume → continue on the chat path. Turn 1 runs a tool
+/// call (so reasoning-free tool call + result are persisted); the worker is
+/// dropped; a fresh worker resumes the same thread from its rollout; turn 2
+/// completes. Asserts the resumed outgoing history carries the prior tool
+/// result (call continuity survives) and the tool is NOT re-executed on resume.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_completions_persist_resume_continue() {
+    // --- First worker: run a tool-call turn, then persist. ---------------
+    let server = start_mock_chat_completions_server().await;
+    let args = json!({"command": "echo persisted", "timeout_ms": 5_000}).to_string();
+    let tool_turn = cc_sse(vec![
+        cc_tool_call_open("c1", 0, "call_persist", "shell_command", &args),
+        cc_finish("c1", "tool_calls"),
+        cc_usage(
+            "c1", /*prompt*/ 30, /*hit*/ 0, /*miss*/ 30, /*completion*/ 4,
+        ),
+    ]);
+    let after_tool = cc_text_turn(
+        "c2",
+        "first done",
+        /*prompt*/ 40,
+        /*completion*/ 2,
+    );
+    mount_chat_completions_sequence(&server, vec![tool_turn, after_tool]).await;
+
+    let mut builder = test_codex().with_config(|config| {
+        config.model_provider.wire_api = WireApi::ChatCompletions;
+        config.model_provider.supports_websockets = false;
+    });
+    let initial = builder
+        .build(&server)
+        .await
+        .expect("build initial chat_completions test codex");
+    let home = initial.home.clone();
+    let rollout_path = initial
+        .session_configured
+        .rollout_path
+        .clone()
+        .expect("rollout path present");
+
+    submit_text_with_sandbox(&initial.codex, "run echo", SandboxPolicy::DangerFullAccess).await;
+    wait_for_event(&initial.codex, |ev| {
+        matches!(ev, EventMsg::ExecCommandEnd(_))
+    })
+    .await;
+    wait_for_event(&initial.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+
+    // Drop the first worker to simulate stop.
+    drop(initial);
+
+    // --- Second worker: resume the same thread and continue. -------------
+    let resume_server = start_mock_chat_completions_server().await;
+    let continuation = cc_text_turn(
+        "c3",
+        "after resume",
+        /*prompt*/ 60,
+        /*completion*/ 3,
+    );
+    let resume_mock = mount_chat_completions_once(&resume_server, continuation).await;
+
+    let mut resume_builder = test_codex().with_config(|config| {
+        config.model_provider.wire_api = WireApi::ChatCompletions;
+        config.model_provider.supports_websockets = false;
+    });
+    let resumed = resume_builder
+        .resume(&resume_server, home, rollout_path)
+        .await
+        .expect("resume chat_completions thread");
+
+    submit_text(&resumed.codex, "continue please").await;
+    let message =
+        wait_for_event(&resumed.codex, |ev| matches!(ev, EventMsg::AgentMessage(_))).await;
+    let EventMsg::AgentMessage(message) = message else {
+        unreachable!("matched AgentMessage above");
+    };
+    assert_eq!(message.message, "after resume");
+    wait_for_event(&resumed.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+
+    // The resumed continuation request must carry the persisted tool result
+    // (a "tool" role message) so DeepSeek call continuity survives resume...
+    let resumed_request = resume_mock
+        .last_request()
+        .expect("resumed continuation request captured");
+    let messages = resumed_request.messages();
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.get("role").and_then(|r| r.as_str()) == Some("tool")),
+        "resumed history must carry the prior tool result, got: {messages:?}"
+    );
+
+    // ...and the tool was NOT re-executed on resume: the resume server saw
+    // exactly one request (the continuation), no tool-call round-trip.
+    assert_eq!(
+        resume_mock.request_count(),
+        1,
+        "resume must not replay the tool side effect"
+    );
+}
