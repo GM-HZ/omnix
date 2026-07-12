@@ -193,7 +193,7 @@ async fn process_chat_completions_sse(
                 response_id: response_id.clone(),
                 token_usage: Some(TokenUsage {
                     input_tokens: u.prompt_tokens as i64,
-                    cached_input_tokens: 0,
+                    cached_input_tokens: i64::from(u.prompt_cache_hit_tokens),
                     output_tokens: u.completion_tokens as i64,
                     reasoning_output_tokens: 0,
                     total_tokens: u.total_tokens as i64,
@@ -367,6 +367,93 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// Extract the token usage reported by the terminal `Completed` event.
+    fn completed_usage(events: &[ResponseEvent]) -> Option<TokenUsage> {
+        events.iter().find_map(|ev| match ev {
+            ResponseEvent::Completed { token_usage, .. } => token_usage.clone(),
+            _ => None,
+        })
+    }
+
+    /// DeepSeek reports prompt-cache hits via `prompt_cache_hit_tokens`; those
+    /// must surface as `cached_input_tokens` in the terminal usage so the token
+    /// accounting path can distinguish cached from fresh prompt tokens.
+    #[tokio::test]
+    async fn cache_hit_tokens_map_to_cached_input() {
+        let events = ok_events(
+            collect_events(&[
+                "data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hi\"},\"finish_reason\":null}]}\n\n",
+                "data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                "data: {\"id\":\"cache-1\",\"choices\":[],\"usage\":{\"prompt_tokens\":1000,\"prompt_cache_hit_tokens\":900,\"prompt_cache_miss_tokens\":100,\"completion_tokens\":20,\"total_tokens\":1020}}\n\n",
+                "data: [DONE]\n\n",
+            ])
+            .await,
+        );
+
+        assert_eq!(
+            completed_usage(&events),
+            Some(TokenUsage {
+                input_tokens: 1000,
+                cached_input_tokens: 900,
+                output_tokens: 20,
+                reasoning_output_tokens: 0,
+                total_tokens: 1020,
+            })
+        );
+    }
+
+    /// Providers that omit the cache fields (e.g. Qwen, older DeepSeek) must
+    /// still complete, reporting zero cached input rather than failing to parse.
+    #[tokio::test]
+    async fn missing_cache_fields_report_zero_cached_input() {
+        let events = ok_events(
+            collect_events(&[
+                "data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hi\"},\"finish_reason\":null}]}\n\n",
+                "data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2,\"total_tokens\":7}}\n\n",
+                "data: [DONE]\n\n",
+            ])
+            .await,
+        );
+
+        assert_eq!(
+            completed_usage(&events),
+            Some(TokenUsage {
+                input_tokens: 5,
+                cached_input_tokens: 0,
+                output_tokens: 2,
+                reasoning_output_tokens: 0,
+                total_tokens: 7,
+            })
+        );
+    }
+
+    /// When `hit + miss != prompt_tokens` we trust the provider-reported hit
+    /// count verbatim and keep `input_tokens` sourced from `prompt_tokens`; the
+    /// turn must still complete without reconstructing the input count.
+    #[tokio::test]
+    async fn inconsistent_cache_counts_trust_provider_hit_count() {
+        let events = ok_events(
+            collect_events(&[
+                "data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hi\"},\"finish_reason\":null}]}\n\n",
+                "data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                "data: {\"id\":\"cache-2\",\"choices\":[],\"usage\":{\"prompt_tokens\":1000,\"prompt_cache_hit_tokens\":700,\"prompt_cache_miss_tokens\":100,\"completion_tokens\":20,\"total_tokens\":1020}}\n\n",
+                "data: [DONE]\n\n",
+            ])
+            .await,
+        );
+
+        assert_eq!(
+            completed_usage(&events),
+            Some(TokenUsage {
+                input_tokens: 1000,
+                cached_input_tokens: 700,
+                output_tokens: 20,
+                reasoning_output_tokens: 0,
+                total_tokens: 1020,
+            })
+        );
     }
 
     /// Regression: an assistant text reply must be emitted exactly once as a
