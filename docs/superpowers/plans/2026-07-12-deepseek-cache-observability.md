@@ -379,7 +379,7 @@ exclude warm-up.
 Add `test-deepseek-cache` using nextest's ignored-only selection so it runs only this paid test.
 Preserve `DEEPSEEK_API_KEY` and do not echo it.
 
-- [ ] **Step 8: Verify offline and live smoke modes**
+- [x] **Step 8: Verify offline and live smoke modes**
 
 From `codex-rs`:
 
@@ -452,7 +452,7 @@ Start a new aggregate segment whenever the context window generation changes.
 Print both scenarios in one table and JSON object. A low hit rate is report data, not test failure.
 Only configuration, transport, parsing, missing usage, or internal invariant errors return nonzero.
 
-- [ ] **Step 7: Run three normal baselines**
+- [x] **Step 7: Run three normal baselines**
 
 From repository root:
 
@@ -519,12 +519,12 @@ Expected: no schema/API changes.
 Run one warmed DeepSeek-backed `codex exec --json` command using existing provider configuration.
 Confirm final usage exposes nonzero cached input without a new exec flag.
 
-- [ ] **Step 5: Classify three normal runs**
+- [x] **Step 5: Classify three normal runs**
 
 Record control/harness rates, gap, changing fingerprints, context usage, and window resets. Do not
 start Phase 2 until all three runs are comparable.
 
-- [ ] **Step 6: Apply the decision matrix**
+- [x] **Step 6: Apply the decision matrix**
 
 | Evidence | First Phase 2 candidate |
 | --- | --- |
