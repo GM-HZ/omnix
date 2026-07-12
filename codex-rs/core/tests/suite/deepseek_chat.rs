@@ -218,3 +218,78 @@ async fn chat_completions_interrupt_aborts_active_turn() {
 
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnAborted(_))).await;
 }
+
+/// The compaction summarization prompt, set explicitly so the mock can detect
+/// the auto-compaction request among ordinary turns.
+const TEST_COMPACT_PROMPT: &str = "Summarize the conversation so far.";
+
+/// Does any message in the request body carry `needle` in its content?
+fn request_contains_text(
+    request: &core_test_support::chat_completions::ChatCompletionsRequest,
+    needle: &str,
+) -> bool {
+    request.messages().iter().any(|message| {
+        message
+            .get("content")
+            .map(|content| content.to_string().contains(needle))
+            .unwrap_or(false)
+    })
+}
+
+/// B4: automatic compaction on the chat path. The first turn reports usage over
+/// a scaled-down `auto_compact_token_limit`; core must run a compaction request
+/// (carrying the compact prompt) and then complete the follow-up turn — i.e.
+/// compact-then-continue works over `wire_api = "chat_completions"`.
+#[tokio::test]
+async fn chat_completions_auto_compact_then_continue() {
+    let server = start_mock_chat_completions_server().await;
+
+    // Turn 1 crosses the (scaled-down) 200-token compaction threshold.
+    let turn1 = cc_text_turn(
+        "c1",
+        "first reply",
+        /*prompt*/ 150,
+        /*completion*/ 100,
+    );
+    // The compaction summary request → a short summary response.
+    let summary = cc_text_turn("c2", "summary", /*prompt*/ 50, /*completion*/ 5);
+    // The follow-up turn after compaction completes normally.
+    let follow_up = cc_text_turn(
+        "c3",
+        "after compact",
+        /*prompt*/ 40,
+        /*completion*/ 3,
+    );
+    let chat_mock = mount_chat_completions_sequence(&server, vec![turn1, summary, follow_up]).await;
+
+    let codex = test_codex()
+        .with_config(|config| {
+            config.model_provider.wire_api = WireApi::ChatCompletions;
+            config.model_provider.supports_websockets = false;
+            config.compact_prompt = Some(TEST_COMPACT_PROMPT.to_string());
+            config.model_auto_compact_token_limit = Some(200);
+        })
+        .build(&server)
+        .await
+        .expect("build chat_completions test codex")
+        .codex;
+
+    // Turn 1 — crosses the threshold; auto-compaction runs before the follow-up.
+    submit_text(&codex, "first message").await;
+    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+
+    // Follow-up turn — must complete (compact then continue).
+    submit_text(&codex, "second message").await;
+    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+
+    // Exactly one request carried the compaction prompt.
+    let compaction_requests = chat_mock
+        .requests()
+        .into_iter()
+        .filter(|request| request_contains_text(request, TEST_COMPACT_PROMPT))
+        .count();
+    assert_eq!(
+        compaction_requests, 1,
+        "expected exactly one auto-compaction request on the chat path"
+    );
+}
