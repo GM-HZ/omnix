@@ -107,4 +107,10 @@ pub struct ChunkUsage {
     pub completion_tokens: u32,
     #[serde(default)]
     pub total_tokens: u32,
+    /// DeepSeek: prompt tokens served from the provider-side prompt cache.
+    #[serde(default)]
+    pub prompt_cache_hit_tokens: u32,
+    /// DeepSeek: prompt tokens that missed the provider-side prompt cache.
+    #[serde(default)]
+    pub prompt_cache_miss_tokens: u32,
 }

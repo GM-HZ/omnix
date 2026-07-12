@@ -188,12 +188,13 @@ async fn process_chat_completions_sse(
 
     // Emit final usage
     if let Some(ref u) = usage {
+        emit_cache_usage_diagnostics(u);
         let _ = tx
             .send(Ok(ResponseEvent::Completed {
                 response_id: response_id.clone(),
                 token_usage: Some(TokenUsage {
                     input_tokens: u.prompt_tokens as i64,
-                    cached_input_tokens: 0,
+                    cached_input_tokens: i64::from(u.prompt_cache_hit_tokens),
                     output_tokens: u.completion_tokens as i64,
                     reasoning_output_tokens: 0,
                     total_tokens: u.total_tokens as i64,
@@ -202,6 +203,53 @@ async fn process_chat_completions_sse(
             }))
             .await;
     }
+}
+
+/// Response-side prompt-cache diagnostics derived from the provider's final
+/// usage report. Content-free (counts and a ratio only), so it is safe to log.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct CacheUsageDiagnostics {
+    prompt_tokens: u32,
+    hit_tokens: u32,
+    miss_tokens: u32,
+    /// Token-weighted hit ratio `hit / (hit + miss)`, or `None` when there is
+    /// no cache signal (both counts zero) so we never report a misleading 0.0.
+    hit_ratio: Option<f64>,
+    /// Whether `hit + miss == prompt_tokens`. When false, the provider's cache
+    /// split does not reconcile with its own prompt count.
+    usage_consistent: bool,
+}
+
+impl CacheUsageDiagnostics {
+    fn from_usage(usage: &ChunkUsage) -> Self {
+        let hit = usage.prompt_cache_hit_tokens;
+        let miss = usage.prompt_cache_miss_tokens;
+        let denom = hit + miss;
+        let hit_ratio = (denom > 0).then(|| f64::from(hit) / f64::from(denom));
+        Self {
+            prompt_tokens: usage.prompt_tokens,
+            hit_tokens: hit,
+            miss_tokens: miss,
+            hit_ratio,
+            usage_consistent: denom == usage.prompt_tokens,
+        }
+    }
+}
+
+/// Emit a `chat_completions.cache_usage` debug event from the provider's final
+/// usage. Uses the enclosing tracing span for correlation; does not touch
+/// `ResponseEvent` or introduce a public request identifier.
+fn emit_cache_usage_diagnostics(usage: &ChunkUsage) {
+    let diagnostics = CacheUsageDiagnostics::from_usage(usage);
+    debug!(
+        target: "chat_completions.cache_usage",
+        prompt_tokens = diagnostics.prompt_tokens,
+        hit_tokens = diagnostics.hit_tokens,
+        miss_tokens = diagnostics.miss_tokens,
+        hit_ratio = diagnostics.hit_ratio.unwrap_or(-1.0),
+        usage_consistent = diagnostics.usage_consistent,
+        "observed chat completions prompt cache usage"
+    );
 }
 
 fn accumulate_tool_call(slots: &mut Vec<ToolCallSlot>, tc: &ChunkDeltaToolCall) {
@@ -369,6 +417,93 @@ mod tests {
             .collect()
     }
 
+    /// Extract the token usage reported by the terminal `Completed` event.
+    fn completed_usage(events: &[ResponseEvent]) -> Option<TokenUsage> {
+        events.iter().find_map(|ev| match ev {
+            ResponseEvent::Completed { token_usage, .. } => token_usage.clone(),
+            _ => None,
+        })
+    }
+
+    /// DeepSeek reports prompt-cache hits via `prompt_cache_hit_tokens`; those
+    /// must surface as `cached_input_tokens` in the terminal usage so the token
+    /// accounting path can distinguish cached from fresh prompt tokens.
+    #[tokio::test]
+    async fn cache_hit_tokens_map_to_cached_input() {
+        let events = ok_events(
+            collect_events(&[
+                "data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hi\"},\"finish_reason\":null}]}\n\n",
+                "data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                "data: {\"id\":\"cache-1\",\"choices\":[],\"usage\":{\"prompt_tokens\":1000,\"prompt_cache_hit_tokens\":900,\"prompt_cache_miss_tokens\":100,\"completion_tokens\":20,\"total_tokens\":1020}}\n\n",
+                "data: [DONE]\n\n",
+            ])
+            .await,
+        );
+
+        assert_eq!(
+            completed_usage(&events),
+            Some(TokenUsage {
+                input_tokens: 1000,
+                cached_input_tokens: 900,
+                output_tokens: 20,
+                reasoning_output_tokens: 0,
+                total_tokens: 1020,
+            })
+        );
+    }
+
+    /// Providers that omit the cache fields (e.g. Qwen, older DeepSeek) must
+    /// still complete, reporting zero cached input rather than failing to parse.
+    #[tokio::test]
+    async fn missing_cache_fields_report_zero_cached_input() {
+        let events = ok_events(
+            collect_events(&[
+                "data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hi\"},\"finish_reason\":null}]}\n\n",
+                "data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2,\"total_tokens\":7}}\n\n",
+                "data: [DONE]\n\n",
+            ])
+            .await,
+        );
+
+        assert_eq!(
+            completed_usage(&events),
+            Some(TokenUsage {
+                input_tokens: 5,
+                cached_input_tokens: 0,
+                output_tokens: 2,
+                reasoning_output_tokens: 0,
+                total_tokens: 7,
+            })
+        );
+    }
+
+    /// When `hit + miss != prompt_tokens` we trust the provider-reported hit
+    /// count verbatim and keep `input_tokens` sourced from `prompt_tokens`; the
+    /// turn must still complete without reconstructing the input count.
+    #[tokio::test]
+    async fn inconsistent_cache_counts_trust_provider_hit_count() {
+        let events = ok_events(
+            collect_events(&[
+                "data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hi\"},\"finish_reason\":null}]}\n\n",
+                "data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                "data: {\"id\":\"cache-2\",\"choices\":[],\"usage\":{\"prompt_tokens\":1000,\"prompt_cache_hit_tokens\":700,\"prompt_cache_miss_tokens\":100,\"completion_tokens\":20,\"total_tokens\":1020}}\n\n",
+                "data: [DONE]\n\n",
+            ])
+            .await,
+        );
+
+        assert_eq!(
+            completed_usage(&events),
+            Some(TokenUsage {
+                input_tokens: 1000,
+                cached_input_tokens: 700,
+                output_tokens: 20,
+                reasoning_output_tokens: 0,
+                total_tokens: 1020,
+            })
+        );
+    }
+
     /// Regression: an assistant text reply must be emitted exactly once as a
     /// standard `OutputItemDone(Message)`. Previously the parser emitted a
     /// `ChatOutputItemDone(OmnixMessage)` that the core turn loop ignored, so
@@ -481,5 +616,46 @@ mod tests {
                     && call_id == "call_1"
                     && arguments == "{\"command\":[\"ls\"]}"
         );
+    }
+
+    fn usage(prompt: u32, hit: u32, miss: u32) -> ChunkUsage {
+        ChunkUsage {
+            prompt_tokens: prompt,
+            completion_tokens: 0,
+            total_tokens: prompt,
+            prompt_cache_hit_tokens: hit,
+            prompt_cache_miss_tokens: miss,
+        }
+    }
+
+    /// With no cache signal at all (hit=miss=0) the ratio must be unavailable,
+    /// never a misleading 0.0.
+    #[test]
+    fn cache_ratio_unavailable_without_signal() {
+        let diagnostics = CacheUsageDiagnostics::from_usage(&usage(0, 0, 0));
+        assert_eq!(diagnostics.hit_ratio, None);
+    }
+
+    /// A 90/10 split yields a 0.9 token-weighted hit ratio.
+    #[test]
+    fn cache_ratio_reports_token_weighted_hit_rate() {
+        let diagnostics = CacheUsageDiagnostics::from_usage(&usage(100, 90, 10));
+        assert_eq!(diagnostics.hit_ratio, Some(0.9));
+    }
+
+    /// A full miss reports 0.0 (a real, available signal — distinct from the
+    /// no-signal case above).
+    #[test]
+    fn cache_ratio_reports_zero_on_full_miss() {
+        let diagnostics = CacheUsageDiagnostics::from_usage(&usage(100, 0, 100));
+        assert_eq!(diagnostics.hit_ratio, Some(0.0));
+    }
+
+    /// Consistency is judged against `prompt_tokens` independently of the ratio:
+    /// hit+miss==prompt is consistent; a mismatch is flagged.
+    #[test]
+    fn cache_usage_consistency_checks_prompt_tokens() {
+        assert!(CacheUsageDiagnostics::from_usage(&usage(100, 90, 10)).usage_consistent);
+        assert!(!CacheUsageDiagnostics::from_usage(&usage(1000, 700, 100)).usage_consistent);
     }
 }
