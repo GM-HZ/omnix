@@ -568,7 +568,7 @@
       "model_messages": null,
       "experimental_supported_tools": [],
       "include_skills_usage_instructions": false,
-      "auto_compact_token_limit": null
+      "auto_compact_token_limit": 850000
     },
     {
       "slug": "deepseek-v4-pro",
@@ -582,7 +582,7 @@
       "supports_parallel_tool_calls": true,
       "apply_patch_tool_type": "freeform",
       "shell_type": "shell_command",
-      "auto_compact_token_limit": null,
+      "auto_compact_token_limit": 850000,
       "availability_nux": null,
       "upgrade": null,
       "base_instructions": "",

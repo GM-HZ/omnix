@@ -1053,3 +1053,33 @@ fn bundled_models_json_roundtrips() {
         "bundled models.json should contain at least one model"
     );
 }
+
+/// Runtime 0.0 freezes the DeepSeek context policy at raw 1,000,000 / compact
+/// 850,000. The compact threshold must be pinned explicitly in models.json:
+/// leaving `auto_compact_token_limit` null derives `(1,000,000 * 9) / 10 =
+/// 900,000`, which silently violates the release contract. This test fails if
+/// the metadata ever drifts back to the derived 900K.
+#[test]
+fn bundled_deepseek_models_pin_runtime_0_0_context_policy() {
+    let response = crate::bundled_models_response()
+        .unwrap_or_else(|err| panic!("bundled models.json should parse: {err}"));
+
+    for slug in ["deepseek-v4-flash", "deepseek-v4-pro"] {
+        let model = response
+            .models
+            .iter()
+            .find(|model| model.slug == slug)
+            .unwrap_or_else(|| panic!("bundled models.json should contain {slug}"));
+
+        assert_eq!(
+            model.context_window,
+            Some(1_000_000),
+            "{slug} raw context window must be 1,000,000"
+        );
+        assert_eq!(
+            model.auto_compact_token_limit(),
+            Some(850_000),
+            "{slug} must compact at 850,000, not the derived 900,000 (null)"
+        );
+    }
+}
