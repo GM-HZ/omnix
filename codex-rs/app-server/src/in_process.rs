@@ -760,6 +760,183 @@ mod tests {
         }
     }
 
+    /// In-process boundary smoke over a `wire_api = "chat_completions"` provider
+    /// (the release-gated DeepSeek path). Prior in-process tests all used the
+    /// default (Responses) provider; this drives a full turn — thread start,
+    /// user input, streamed assistant message, completion — through the
+    /// in-process transport against a mock Chat Completions server, so the
+    /// release-gate claim for the in-process host is exercised, not assumed.
+    #[tokio::test]
+    async fn in_process_chat_completions_turn_lifecycle() {
+        use codex_app_server_protocol::ThreadItem;
+        use codex_app_server_protocol::TurnStartParams;
+        use codex_app_server_protocol::UserInput as V2UserInput;
+        use core_test_support::chat_completions::cc_text_turn;
+        use wiremock::Mock;
+        use wiremock::MockServer;
+        use wiremock::ResponseTemplate;
+        use wiremock::matchers::method;
+        use wiremock::matchers::path_regex;
+
+        // Mock Chat Completions server returning one assistant text turn.
+        let server = MockServer::start().await;
+        let assistant_text = "Hello from in-process DeepSeek";
+        let body = cc_text_turn(
+            "cc-1",
+            assistant_text,
+            /*prompt*/ 10,
+            /*completion*/ 4,
+        );
+        Mock::given(method("POST"))
+            .and(path_regex(".*/chat/completions$"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(body),
+            )
+            .mount(&server)
+            .await;
+
+        // Write a config.toml selecting a Chat Completions provider pointed at
+        // the mock, then load it via the same path the runtime uses. Loading
+        // from disk (rather than mutating the Config struct) matches how the
+        // stdio app-server is configured and survives provider re-resolution.
+        let codex_home = TempDir::new().expect("temp dir");
+        std::fs::write(
+            codex_home.path().join("config.toml"),
+            format!(
+                r#"
+model = "mock-model"
+approval_policy = "never"
+sandbox_mode = "read-only"
+model_provider = "mock_deepseek"
+
+[model_providers.mock_deepseek]
+name = "Mock DeepSeek provider for test"
+base_url = "{uri}/v1"
+experimental_bearer_token = "test-key"
+wire_api = "chat_completions"
+request_max_retries = 0
+stream_max_retries = 0
+supports_websockets = false
+"#,
+                uri = server.uri()
+            ),
+        )
+        .expect("write config.toml");
+
+        let config = Arc::new(build_test_config(codex_home.path()).await);
+        assert_eq!(
+            config.model_provider.wire_api,
+            codex_model_provider_info::WireApi::ChatCompletions,
+            "config should load the chat_completions provider"
+        );
+        let state_db = codex_rollout::state_db::try_init(config.as_ref())
+            .await
+            .expect("state db should initialize");
+        let args = InProcessStartArgs {
+            arg0_paths: Arg0DispatchPaths::default(),
+            config,
+            cli_overrides: Vec::new(),
+            loader_overrides: LoaderOverrides::default(),
+            strict_config: false,
+            cloud_config_bundle: CloudConfigBundleLoader::default(),
+            thread_config_loader: Arc::new(codex_config::NoopThreadConfigLoader),
+            feedback: CodexFeedback::new(),
+            log_db: None,
+            state_db: Some(state_db),
+            environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
+            config_warnings: Vec::new(),
+            session_source: SessionSource::Cli,
+            enable_codex_api_key_env: false,
+            initialize: InitializeParams {
+                client_info: ClientInfo {
+                    name: "codex-in-process-test".to_string(),
+                    title: None,
+                    version: "0.0.0".to_string(),
+                },
+                capabilities: None,
+            },
+            channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+        };
+        let mut client = start(args).await.expect("in-process runtime should start");
+        client._test_codex_home = Some(codex_home);
+
+        // thread/start
+        let thread_resp = client
+            .request(ClientRequest::ThreadStart {
+                request_id: RequestId::Integer(1),
+                params: ThreadStartParams {
+                    model: Some("mock-model".to_string()),
+                    ..ThreadStartParams::default()
+                },
+            })
+            .await
+            .expect("request transport should work")
+            .expect("thread/start should succeed");
+        let thread: ThreadStartResponse =
+            serde_json::from_value(thread_resp).expect("thread/start response parses");
+        let thread_id = thread.thread.id;
+
+        // turn/start with a real user message
+        client
+            .request(ClientRequest::TurnStart {
+                request_id: RequestId::Integer(2),
+                params: TurnStartParams {
+                    thread_id: thread_id.clone(),
+                    input: vec![V2UserInput::Text {
+                        text: "ping-in-process".to_string(),
+                        text_elements: Vec::new(),
+                    }],
+                    ..TurnStartParams::default()
+                },
+            })
+            .await
+            .expect("request transport should work")
+            .expect("turn/start should succeed");
+
+        // Drain notifications: the assistant message must arrive with the
+        // expected text, and the turn must complete successfully.
+        let mut saw_assistant_text = false;
+        loop {
+            let event = client
+                .next_event()
+                .await
+                .expect("event stream should not end");
+            match event {
+                InProcessServerEvent::ServerNotification(ServerNotification::ItemCompleted(
+                    note,
+                )) => {
+                    if let ThreadItem::AgentMessage { text, .. } = note.item {
+                        assert_eq!(text, assistant_text);
+                        saw_assistant_text = true;
+                    }
+                }
+                InProcessServerEvent::ServerNotification(ServerNotification::TurnCompleted(
+                    note,
+                )) => {
+                    assert_eq!(
+                        note.turn.status,
+                        TurnStatus::Completed,
+                        "turn failed: {:?}",
+                        note.turn.error
+                    );
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            saw_assistant_text,
+            "expected an assistant message on the in-process chat path"
+        );
+
+        client
+            .shutdown()
+            .await
+            .expect("in-process runtime should shutdown cleanly");
+    }
+
     async fn start_test_client_with_capacity(
         session_source: SessionSource,
         channel_capacity: usize,
