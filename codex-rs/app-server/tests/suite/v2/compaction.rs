@@ -318,4 +318,3 @@ async fn wait_for_context_compaction_completed(
         }
     }
 }
-

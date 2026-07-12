@@ -252,7 +252,6 @@ async fn list_apps_includes_plugin_apps_for_chatgpt_auth() -> Result<()> {
     Ok(())
 }
 
-
 #[derive(Clone)]
 struct AppsServerState {
     expected_bearer: String,

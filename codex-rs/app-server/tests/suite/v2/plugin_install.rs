@@ -873,7 +873,6 @@ async fn list_directory_connectors(
     }
 }
 
-
 fn write_connectors_config(codex_home: &std::path::Path, base_url: &str) -> std::io::Result<()> {
     std::fs::write(
         codex_home.join("config.toml"),
@@ -889,14 +888,12 @@ connectors = true
     )
 }
 
-
 fn write_analytics_config(codex_home: &std::path::Path, base_url: &str) -> std::io::Result<()> {
     std::fs::write(
         codex_home.join("config.toml"),
         format!("chatgpt_base_url = \"{base_url}\"\n"),
     )
 }
-
 
 async fn wait_for_plugin_analytics_payload(server: &MockServer) -> Result<serde_json::Value> {
     timeout(DEFAULT_TIMEOUT, async {
@@ -930,19 +927,6 @@ async fn oauth_discovery_request_count(server: &MockServer) -> usize {
         .filter(|request| request.url.path().contains("oauth-authorization-server"))
         .count()
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 async fn wait_for_remote_plugin_request_count(
     server: &MockServer,
@@ -1066,8 +1050,3 @@ fn write_plugin_mcp_config(
     )?;
     Ok(())
 }
-
-
-
-
-

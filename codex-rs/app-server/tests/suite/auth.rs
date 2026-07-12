@@ -78,7 +78,6 @@ shell_snapshot = false
     )
 }
 
-
 async fn login_with_api_key_via_request(mcp: &mut TestAppServer, api_key: &str) -> Result<()> {
     let request_id = mcp.send_login_account_api_key_request(api_key).await?;
 
