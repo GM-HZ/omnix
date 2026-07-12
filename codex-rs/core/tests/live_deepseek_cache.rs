@@ -990,11 +990,13 @@ mod live {
 
     /// Calibrate the stable document so the provider-reported prompt tokens land
     /// within [`CALIBRATION_TOLERANCE`] of the profile target. Sends up to a few
-    /// short probe requests (varying the trailing question so probes do not each
-    /// warm the same cache prefix), rescaling the char budget from measured
-    /// usage each time. Returns the calibrated document plus the measured prompt
-    /// tokens it produced. Panics if it cannot converge — an honest failure
-    /// rather than silently accepting an off-target size.
+    /// short probe requests, rescaling the char budget from measured usage each
+    /// time. The trailing question varies per probe, but the system + document
+    /// prefix stays fixed once a size converges, so these probes actively
+    /// pre-warm the control prefix in the provider cache. Returns the calibrated
+    /// document plus the measured prompt tokens it produced. Panics if it cannot
+    /// converge — an honest failure rather than silently accepting an off-target
+    /// size.
     async fn calibrate_document(
         client: &ChatCompletionsClient<ReqwestTransport>,
         model: &str,
