@@ -658,4 +658,143 @@ mod tests {
         assert!(CacheUsageDiagnostics::from_usage(&usage(100, 90, 10)).usage_consistent);
         assert!(!CacheUsageDiagnostics::from_usage(&usage(1000, 700, 100)).usage_consistent);
     }
+
+    /// Reasoning followed by a tool call in one stream: a `Reasoning` item must
+    /// land before the `FunctionCall`, so DeepSeek thinking-mode tool turns keep
+    /// their reasoning_content attached to the right call.
+    #[tokio::test]
+    async fn reasoning_then_tool_call_emits_reasoning_before_function_call() {
+        let events = ok_events(
+            collect_events(&[
+                "data: {\"id\":\"c4\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"reasoning_content\":\"Plan\"},\"finish_reason\":null}]}\n\n",
+                "data: {\"id\":\"c4\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"shell\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n",
+                "data: {\"id\":\"c4\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n",
+                "data: [DONE]\n\n",
+            ])
+            .await,
+        );
+
+        let items = output_item_dones(&events);
+        assert_eq!(
+            items.len(),
+            2,
+            "expected reasoning + function call, got: {events:?}"
+        );
+        assert_matches!(
+            items[0],
+            ResponseItem::Reasoning { content: Some(c), .. }
+                if c == &vec![ReasoningItemContent::ReasoningText { text: "Plan".to_string() }]
+        );
+        assert_matches!(
+            items[1],
+            ResponseItem::FunctionCall { name, call_id, .. }
+                if name == "shell" && call_id == "call_1"
+        );
+    }
+
+    /// Two tool calls in a single streamed response (distinct `index` slots)
+    /// must both land as separate `FunctionCall` items.
+    #[tokio::test]
+    async fn multiple_tool_calls_in_one_response_emit_all() {
+        let events = ok_events(
+            collect_events(&[
+                "data: {\"id\":\"c5\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call_a\",\"type\":\"function\",\"function\":{\"name\":\"read\",\"arguments\":\"{}\"}},{\"index\":1,\"id\":\"call_b\",\"type\":\"function\",\"function\":{\"name\":\"write\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n",
+                "data: {\"id\":\"c5\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n",
+                "data: [DONE]\n\n",
+            ])
+            .await,
+        );
+
+        let calls: Vec<(&str, &str)> = output_item_dones(&events)
+            .into_iter()
+            .filter_map(|item| match item {
+                ResponseItem::FunctionCall { name, call_id, .. } => {
+                    Some((name.as_str(), call_id.as_str()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(calls, vec![("read", "call_a"), ("write", "call_b")]);
+    }
+
+    /// A malformed `data:` line (invalid JSON) must be skipped, not fatal: the
+    /// surrounding well-formed chunks still parse and the turn completes.
+    #[tokio::test]
+    async fn malformed_chunk_is_skipped_not_fatal() {
+        let events = ok_events(
+            collect_events(&[
+                "data: {\"id\":\"c6\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hi\"},\"finish_reason\":null}]}\n\n",
+                "data: {not valid json}\n\n",
+                "data: {\"id\":\"c6\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n",
+                "data: [DONE]\n\n",
+            ])
+            .await,
+        );
+
+        // No error event; the assistant message and Completed still arrive.
+        let items = output_item_dones(&events);
+        assert_eq!(items.len(), 1);
+        assert_matches!(items[0], ResponseItem::Message { .. });
+        assert!(
+            events
+                .iter()
+                .any(|ev| matches!(ev, ResponseEvent::Completed { .. }))
+        );
+    }
+
+    /// A transport error mid-stream surfaces as `ApiError::Stream`, not a panic
+    /// or a silently truncated success.
+    #[tokio::test]
+    async fn transport_error_surfaces_as_stream_error() {
+        let reader = IoBuilder::new()
+            .read(b"data: {\"id\":\"c7\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hi\"},\"finish_reason\":null}]}\n\n")
+            .read_error(std::io::Error::other("boom"))
+            .build();
+        let stream =
+            ReaderStream::new(reader).map_err(|err| TransportError::Network(err.to_string()));
+        let (tx, mut rx) = mpsc::channel::<Result<ResponseEvent, ApiError>>(64);
+        tokio::spawn(process_chat_completions_sse(
+            Box::pin(stream),
+            tx,
+            Duration::from_secs(5),
+        ));
+
+        let mut events = Vec::new();
+        while let Some(ev) = rx.recv().await {
+            events.push(ev);
+        }
+
+        assert!(
+            events
+                .iter()
+                .any(|ev| matches!(ev, Err(ApiError::Stream(_)))),
+            "expected an ApiError::Stream, got: {events:?}"
+        );
+    }
+
+    /// When the stream stalls past the idle timeout, the parser emits a stream
+    /// error rather than hanging.
+    #[tokio::test(start_paused = true)]
+    async fn idle_timeout_surfaces_as_stream_error() {
+        let reader = IoBuilder::new()
+            .read(b"data: {\"id\":\"c8\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hi\"},\"finish_reason\":null}]}\n\n")
+            .wait(Duration::from_secs(60))
+            .build();
+        let stream =
+            ReaderStream::new(reader).map_err(|err| TransportError::Network(err.to_string()));
+        let (tx, mut rx) = mpsc::channel::<Result<ResponseEvent, ApiError>>(64);
+        tokio::spawn(process_chat_completions_sse(
+            Box::pin(stream),
+            tx,
+            Duration::from_secs(5),
+        ));
+
+        let mut saw_stream_error = false;
+        while let Some(ev) = rx.recv().await {
+            if matches!(ev, Err(ApiError::Stream(_))) {
+                saw_stream_error = true;
+            }
+        }
+        assert!(saw_stream_error, "expected an idle-timeout stream error");
+    }
 }

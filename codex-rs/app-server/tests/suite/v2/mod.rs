@@ -13,6 +13,7 @@ mod connection_handling_websocket;
 #[cfg(unix)]
 mod connection_handling_websocket_unix;
 mod current_time;
+mod deepseek_chat;
 mod dynamic_tools;
 mod environment_add;
 mod environment_info;

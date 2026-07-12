@@ -106,3 +106,33 @@ stream_max_retries = 0
         ),
     )
 }
+
+/// Write a config.toml that routes to a mock Chat Completions (DeepSeek) server.
+/// This is the Runtime 0.0 release-gated wire path.
+pub fn write_mock_chat_completions_config_toml(
+    codex_home: &Path,
+    server_uri: &str,
+) -> std::io::Result<()> {
+    let config_toml = codex_home.join("config.toml");
+    std::fs::write(
+        config_toml,
+        format!(
+            r#"
+model = "mock-model"
+approval_policy = "never"
+sandbox_mode = "read-only"
+
+model_provider = "mock_deepseek"
+
+[model_providers.mock_deepseek]
+name = "Mock DeepSeek provider for test"
+base_url = "{server_uri}/v1"
+env_key = "DEEPSEEK_API_KEY"
+wire_api = "chat_completions"
+request_max_retries = 0
+stream_max_retries = 0
+supports_websockets = false
+"#
+        ),
+    )
+}

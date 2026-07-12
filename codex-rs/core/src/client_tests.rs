@@ -1093,3 +1093,63 @@ fn observation_does_not_alter_request_json() {
         "observation must not change the request JSON"
     );
 }
+
+/// Runtime 0.0 §4.2 freezes the reasoning-effort → DeepSeek `thinking` mapping.
+/// This asserts both the resolved variant and its serialized wire JSON for
+/// every effort level, so the mapping cannot silently drift.
+#[test]
+fn deepseek_thinking_mapping_matches_runtime_0_0_contract() {
+    fn thinking_json(effort: Option<ReasoningEffort>) -> Option<serde_json::Value> {
+        let model_info = ModelInfo {
+            default_reasoning_level: effort,
+            ..test_model_info()
+        };
+        super::ModelClient::deepseek_thinking_for_effort(&model_info)
+            .map(|thinking| serde_json::to_value(&thinking).expect("thinking serializes"))
+    }
+
+    // none / minimal / low -> disabled
+    for effort in [
+        ReasoningEffort::None,
+        ReasoningEffort::Minimal,
+        ReasoningEffort::Low,
+    ] {
+        assert_eq!(
+            thinking_json(Some(effort.clone())),
+            Some(json!({"type": "disabled"})),
+            "{effort:?} should map to thinking.type=disabled"
+        );
+    }
+
+    // medium -> enabled
+    assert_eq!(
+        thinking_json(Some(ReasoningEffort::Medium)),
+        Some(json!({"type": "enabled"}))
+    );
+
+    // high / max -> annotated, budget 8192
+    for effort in [ReasoningEffort::High, ReasoningEffort::Max] {
+        assert_eq!(
+            thinking_json(Some(effort.clone())),
+            Some(json!({"type": "annotated", "budget": 8192})),
+            "{effort:?} should map to annotated 8192"
+        );
+    }
+
+    // xhigh / ultra -> annotated, budget 16384
+    for effort in [ReasoningEffort::XHigh, ReasoningEffort::Ultra] {
+        assert_eq!(
+            thinking_json(Some(effort.clone())),
+            Some(json!({"type": "annotated", "budget": 16384})),
+            "{effort:?} should map to annotated 16384"
+        );
+    }
+
+    // Unknown/custom effort and absent level leave thinking unset (the request
+    // omits the field rather than guessing).
+    assert_eq!(
+        thinking_json(Some(ReasoningEffort::Custom("weird".into()))),
+        None
+    );
+    assert_eq!(thinking_json(None), None);
+}

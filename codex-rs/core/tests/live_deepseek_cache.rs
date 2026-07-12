@@ -33,16 +33,26 @@ const DEFAULT_MODEL: &str = "deepseek-chat";
 /// characters per token when generating deterministic content.
 const APPROX_CHARS_PER_TOKEN: usize = 4;
 
-/// Effective context window we refuse to exceed with the stable prefix, so a
-/// misconfigured profile cannot silently overflow and force a truncation that
-/// would itself look like a cache reset.
-const MAX_EFFECTIVE_CONTEXT_WINDOW_TOKENS: usize = 60_000;
+/// Effective input window (design §5.1). The stable prefix plus per-round tail
+/// must stay under this; a profile that would exceed it is rejected rather than
+/// silently overflowing into a truncation that looks like a cache reset.
+const MAX_EFFECTIVE_CONTEXT_WINDOW_TOKENS: usize = 950_000;
 
+/// Benchmark profiles mapped to the design §5.4 long-context acceptance levels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CacheProfile {
+    /// ~2K stable prefix — fast behavior and cache regression.
     Smoke,
+    /// ~8K — everyday steady-state.
     Normal,
+    /// ~32K — long-context stability (legacy `long`).
     Long,
+    /// ~100K — application context checkpoint.
+    Context100k,
+    /// ~300K — sustained business workflow checkpoint.
+    Context300k,
+    /// ~700K — long-context stability checkpoint.
+    Context700k,
 }
 
 impl CacheProfile {
@@ -51,6 +61,9 @@ impl CacheProfile {
             "smoke" => Ok(Self::Smoke),
             "normal" => Ok(Self::Normal),
             "long" => Ok(Self::Long),
+            "context100k" => Ok(Self::Context100k),
+            "context300k" => Ok(Self::Context300k),
+            "context700k" => Ok(Self::Context700k),
             other => Err(format!("unknown DEEPSEEK_CACHE_PROFILE: {other:?}")),
         }
     }
@@ -61,6 +74,9 @@ impl CacheProfile {
             Self::Smoke => 2_000,
             Self::Normal => 8_000,
             Self::Long => 32_000,
+            Self::Context100k => 100_000,
+            Self::Context300k => 300_000,
+            Self::Context700k => 700_000,
         }
     }
 }
@@ -485,6 +501,23 @@ mod tests {
         assert_eq!(CacheProfile::Smoke.stable_prefix_tokens(), 2_000);
         assert_eq!(CacheProfile::Normal.stable_prefix_tokens(), 8_000);
         assert_eq!(CacheProfile::Long.stable_prefix_tokens(), 32_000);
+        assert_eq!(CacheProfile::Context100k.stable_prefix_tokens(), 100_000);
+        assert_eq!(CacheProfile::Context300k.stable_prefix_tokens(), 300_000);
+        assert_eq!(CacheProfile::Context700k.stable_prefix_tokens(), 700_000);
+        // Every profile stays within the effective input window (§5.1).
+        for profile in [
+            CacheProfile::Smoke,
+            CacheProfile::Normal,
+            CacheProfile::Long,
+            CacheProfile::Context100k,
+            CacheProfile::Context300k,
+            CacheProfile::Context700k,
+        ] {
+            assert!(
+                profile.stable_prefix_tokens() <= MAX_EFFECTIVE_CONTEXT_WINDOW_TOKENS,
+                "{profile:?} exceeds the effective window"
+            );
+        }
     }
 
     #[test]
