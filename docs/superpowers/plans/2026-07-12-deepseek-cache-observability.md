@@ -37,7 +37,7 @@
 - Modify: `codex-rs/codex-api/src/chat_completions/types.rs`
 - Modify: `codex-rs/codex-api/src/chat_completions/sse_parser.rs`
 
-- [ ] **Step 1: Add the failing SSE usage test**
+- [x] **Step 1: Add the failing SSE usage test**
 
 Add a final SSE chunk containing:
 
@@ -60,7 +60,7 @@ assert_eq!(
 );
 ```
 
-- [ ] **Step 2: Verify the test fails for the intended reason**
+- [x] **Step 2: Verify the test fails for the intended reason**
 
 ```bash
 just test -p codex-api sse_parser
@@ -68,7 +68,7 @@ just test -p codex-api sse_parser
 
 Expected: cached input is `0`.
 
-- [ ] **Step 3: Extend `ChunkUsage` compatibly**
+- [x] **Step 3: Extend `ChunkUsage` compatibly**
 
 Add exactly:
 
@@ -81,7 +81,7 @@ pub prompt_cache_miss_tokens: u32,
 
 Keep existing usage fields unchanged.
 
-- [ ] **Step 4: Map hit tokens to existing protocol accounting**
+- [x] **Step 4: Map hit tokens to existing protocol accounting**
 
 Replace the parser's hard-coded zero with:
 
@@ -91,13 +91,13 @@ cached_input_tokens: i64::from(u.prompt_cache_hit_tokens),
 
 Keep `input_tokens` sourced from `prompt_tokens`; do not reconstruct it from hit plus miss.
 
-- [ ] **Step 5: Add compatibility cases**
+- [x] **Step 5: Add compatibility cases**
 
 Add a fixture without cache fields and expect zero cached input. Add a fixture where
 `hit + miss != prompt_tokens` and verify the turn still completes with the provider-reported hit
 count.
 
-- [ ] **Step 6: Verify and commit**
+- [x] **Step 6: Verify and commit**
 
 ```bash
 just test -p codex-api
@@ -115,7 +115,7 @@ Expected: all `codex-api` tests pass.
 - Modify: `codex-rs/core/src/lib.rs`
 - Modify only if needed: `codex-rs/core/Cargo.toml`, `codex-rs/Cargo.lock`, `MODULE.bazel.lock`
 
-- [ ] **Step 1: Write canonicalization tests**
+- [x] **Step 1: Write canonicalization tests**
 
 Register the sibling file with:
 
@@ -137,7 +137,7 @@ assert_ne!(fingerprint(&json!([1, 2])), fingerprint(&json!([2, 1])));
 
 Also prove tool-array order changes the tool fingerprint.
 
-- [ ] **Step 2: Run the test and observe compile failure**
+- [x] **Step 2: Run the test and observe compile failure**
 
 ```bash
 just test -p codex-core chat_completions_observability
@@ -145,7 +145,7 @@ just test -p codex-core chat_completions_observability
 
 Expected: fingerprint functions and types do not exist.
 
-- [ ] **Step 3: Define focused private types**
+- [x] **Step 3: Define focused private types**
 
 ```rust
 pub(crate) struct ChatCompletionsRequestLayout {
@@ -170,23 +170,23 @@ pub(crate) struct ChatCompletionsLayoutComparison {
 Define an exhaustive private `CacheResetReason` enum for `FirstRequest`, `ModelChanged`,
 `SystemChanged`, `ToolsChanged`, `HistoryRewritten`, and `None`.
 
-- [ ] **Step 4: Implement canonical SHA-256**
+- [x] **Step 4: Implement canonical SHA-256**
 
 Recursively sort JSON object keys, preserve array order, serialize, SHA-256 hash, and expose only the
 first 16 lowercase hex characters. Prefer an existing workspace hashing utility. If a new direct
 dependency is unavoidable, use workspace `sha2`.
 
-- [ ] **Step 5: Implement cumulative message-prefix comparison**
+- [x] **Step 5: Implement cumulative message-prefix comparison**
 
 Hash messages `0..=n` for every index. Compare previous/current vectors until the first mismatch.
 Return the exact number of unchanged messages.
 
-- [ ] **Step 6: Add privacy tests**
+- [x] **Step 6: Add privacy tests**
 
 Use sentinel prompt and tool secrets. Assert every exposed diagnostic string has the expected
 lowercase-hex shape and contains neither sentinel. Do not expose canonical JSON from the module.
 
-- [ ] **Step 7: Verify, lint, and format**
+- [x] **Step 7: Verify, lint, and format**
 
 ```bash
 just test -p codex-core chat_completions_observability
@@ -202,7 +202,7 @@ just bazel-lock-update
 
 Expected: focused tests pass; lockfile changes are limited to the selected hashing dependency.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add codex-rs/core/src/chat_completions_observability.rs   codex-rs/core/src/chat_completions_observability_tests.rs   codex-rs/core/src/lib.rs
@@ -218,7 +218,7 @@ Stage dependency files only when changed.
 - Modify: `codex-rs/core/src/client.rs`
 - Modify: `codex-rs/core/src/client_tests.rs`
 
-- [ ] **Step 1: Add comparison tests**
+- [x] **Step 1: Add comparison tests**
 
 Build two requests with identical system/tools and one appended user message. Expect:
 
@@ -233,7 +233,7 @@ assert_eq!(
 
 Add separate cases changing only tools and rewriting an earlier message.
 
-- [ ] **Step 2: Verify failure**
+- [x] **Step 2: Verify failure**
 
 ```bash
 just test -p codex-core client_tests
@@ -241,12 +241,12 @@ just test -p codex-core client_tests
 
 Expected: request observation is not wired into client state.
 
-- [ ] **Step 3: Add session-scoped previous-layout state**
+- [x] **Step 3: Add session-scoped previous-layout state**
 
 Store `Option<ChatCompletionsRequestLayout>` beside existing mutable model-client session state,
 using the neighboring synchronization pattern. Do not use global state or rollout persistence.
 
-- [ ] **Step 4: Observe the final request**
+- [x] **Step 4: Observe the final request**
 
 In `stream_chat_completions`, after `build_chat_completions_request` and before
 `stream_request`, compute the layout from the exact request that will be serialized. Compare and
@@ -257,18 +257,18 @@ longest matching prefix, reset reason, and effective context window. Include an 
 count only if an existing token estimator is available at this call site; never label bytes as
 tokens.
 
-- [ ] **Step 5: Keep reset classification conservative**
+- [x] **Step 5: Keep reset classification conservative**
 
 Use `HistoryRewritten` when the message prefix is not append-only. Do not add broad plumbing merely
 to label compaction; correlate with existing compaction traces until the request kind is naturally
 available.
 
-- [ ] **Step 6: Prove request JSON is unchanged**
+- [x] **Step 6: Prove request JSON is unchanged**
 
 Serialize a request before and after observation and compare complete `serde_json::Value` objects.
 Observation must not alter model, messages, tools, options, or their ordering.
 
-- [ ] **Step 7: Verify and commit**
+- [x] **Step 7: Verify and commit**
 
 ```bash
 just test -p codex-core client_tests
@@ -284,7 +284,7 @@ git commit -m "feat(core): trace chat completion cache layout"
 - Modify: `codex-rs/codex-api/src/chat_completions/sse_parser.rs`
 - Test: existing `sse_parser.rs` test module
 
-- [ ] **Step 1: Add ratio tests**
+- [x] **Step 1: Add ratio tests**
 
 Define expected behavior:
 
@@ -296,7 +296,7 @@ hit=0, miss=100   -> 0.0
 
 Test consistency separately against `prompt_tokens`.
 
-- [ ] **Step 2: Verify failure**
+- [x] **Step 2: Verify failure**
 
 ```bash
 just test -p codex-api cache_usage
@@ -304,7 +304,7 @@ just test -p codex-api cache_usage
 
 Expected: ratio and consistency diagnostics are absent.
 
-- [ ] **Step 3: Emit response-side diagnostics**
+- [x] **Step 3: Emit response-side diagnostics**
 
 When final usage arrives, emit a debug event named `chat_completions.cache_usage` containing raw
 prompt/hit/miss counts, optional token-weighted ratio, and `usage_consistent`.
@@ -312,7 +312,7 @@ prompt/hit/miss counts, optional token-weighted ratio, and `usage_consistent`.
 Use the enclosing tracing span for correlation. Do not modify `ResponseEvent` or add a public
 request identifier just for logging.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 ```bash
 just test -p codex-api
@@ -328,7 +328,7 @@ git commit -m "feat(api): trace DeepSeek prompt cache usage"
 - Create: `codex-rs/core/tests/live_deepseek_cache.rs`
 - Modify: root `justfile`
 
-- [ ] **Step 1: Separate offline configuration from network execution**
+- [x] **Step 1: Separate offline configuration from network execution**
 
 Define configuration with these environment variables and defaults:
 
@@ -342,13 +342,13 @@ DEEPSEEK_CACHE_WARMUP_SECONDS=5
 
 Keep parsing and report aggregation callable from normal offline tests.
 
-- [ ] **Step 2: Add profile tests**
+- [x] **Step 2: Add profile tests**
 
 Assert `smoke`, `normal`, and `long` target approximately 2K, 8K, and 32K stable-prefix tokens.
 Reject unknown profiles, fewer than two steady-state rounds, unreasonable waits, and payloads that
 would exceed the configured effective context window.
 
-- [ ] **Step 3: Add the paid ignored test**
+- [x] **Step 3: Add the paid ignored test**
 
 Mark the network body:
 
@@ -358,23 +358,23 @@ Mark the network body:
 
 Read the key only at runtime and never include it in errors, debug output, or report structures.
 
-- [ ] **Step 4: Generate deterministic stable content**
+- [x] **Step 4: Generate deterministic stable content**
 
 Generate numbered ASCII paragraphs from a fixed template. Keep system text and document prefix
 byte-identical; vary only a short final question per round.
 
-- [ ] **Step 5: Implement control requests**
+- [x] **Step 5: Implement control requests**
 
 Send one warm-up, sleep the configured persistence interval, then send steady-state rounds directly
 through the production Chat Completions client. Require final usage for every completed request.
 
-- [ ] **Step 6: Define stable reports**
+- [x] **Step 6: Define stable reports**
 
 Each row contains scenario, phase, round, prompt/hit/miss tokens, hit rate, and context data. Print a
 human-readable table followed by JSON. Aggregate by summing tokens before calculating the rate;
 exclude warm-up.
 
-- [ ] **Step 7: Add the explicit root recipe**
+- [x] **Step 7: Add the explicit root recipe**
 
 Add `test-deepseek-cache` using nextest's ignored-only selection so it runs only this paid test.
 Preserve `DEEPSEEK_API_KEY` and do not echo it.
@@ -397,7 +397,7 @@ DEEPSEEK_CACHE_PROFILE=smoke just test-deepseek-cache
 
 Expected: warm-up plus control rounds, valid table/JSON, no secret output.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add codex-rs/core/tests/live_deepseek_cache.rs justfile
@@ -410,12 +410,12 @@ git commit -m "test(core): add DeepSeek cache control benchmark"
 - Modify: `codex-rs/core/tests/live_deepseek_cache.rs`
 - Modify: `codex-rs/core/tests/suite/mod.rs` only if required by the existing registration pattern
 
-- [ ] **Step 1: Add dual-scenario aggregation tests**
+- [x] **Step 1: Add dual-scenario aggregation tests**
 
 Construct control/harness rows in memory and compare the entire summary. Verify token-weighted rates,
 percentage-point gap, warm-up exclusion, and context-window segmentation.
 
-- [ ] **Step 2: Add diagnosis tests**
+- [x] **Step 2: Add diagnosis tests**
 
 Cover:
 
@@ -427,7 +427,7 @@ post-compaction sample                        -> expected_cache_reset
 stable fingerprints with unexplained gap      -> serialization_or_provider_behavior
 ```
 
-- [ ] **Step 3: Verify failure**
+- [x] **Step 3: Verify failure**
 
 ```bash
 just test -p codex-core deepseek_cache_report
@@ -435,19 +435,19 @@ just test -p codex-core deepseek_cache_report
 
 Expected: harness aggregation and diagnoses are absent.
 
-- [ ] **Step 4: Build one production-path Codex session**
+- [x] **Step 4: Build one production-path Codex session**
 
 Use the configured DeepSeek provider and Chat Completions path. Reuse one thread for warm-up and all
 steady-state turns. Keep model, cwd, tools, skill/plugin configuration, and MCP inventory fixed.
 Capture token usage events, not human-formatted output.
 
-- [ ] **Step 5: Attach context-window data**
+- [x] **Step 5: Attach context-window data**
 
 For every harness row record raw/effective context window, provider prompt tokens, usage percentage,
 auto-compact limit/scope, tokens until compaction when available, and a redacted window ordinal.
 Start a new aggregate segment whenever the context window generation changes.
 
-- [ ] **Step 6: Merge reports and diagnosis**
+- [x] **Step 6: Merge reports and diagnosis**
 
 Print both scenarios in one table and JSON object. A low hit rate is report data, not test failure.
 Only configuration, transport, parsing, missing usage, or internal invariant errors return nonzero.
@@ -465,7 +465,7 @@ DEEPSEEK_CACHE_PROFILE=normal just test-deepseek-cache
 Expected: three complete comparable reports. Keep raw results outside version control unless writing
 a sanitized baseline document.
 
-- [ ] **Step 8: Verify and commit**
+- [x] **Step 8: Verify and commit**
 
 ```bash
 cd codex-rs
@@ -485,7 +485,7 @@ Stage `suite/mod.rs` only if changed.
 - No runtime files expected
 - Optional create: `docs/superpowers/results/YYYY-MM-DD-deepseek-cache-baseline.md`
 
-- [ ] **Step 1: Run final lint and formatting**
+- [x] **Step 1: Run final lint and formatting**
 
 ```bash
 cd codex-rs
@@ -494,7 +494,7 @@ just fix -p codex-core
 just fmt
 ```
 
-- [ ] **Step 2: Run affected tests**
+- [x] **Step 2: Run affected tests**
 
 ```bash
 just test -p codex-api
@@ -504,7 +504,7 @@ just test -p codex-core
 Expected: both pass. Ask before running complete workspace `just test`, as required by repository
 policy because `codex-core` changed.
 
-- [ ] **Step 3: Prove no public protocol drift**
+- [x] **Step 3: Prove no public protocol drift**
 
 From repository root:
 
@@ -535,7 +535,7 @@ start Phase 2 until all three runs are comparable.
 | Control/harness gap is below 5 points | Avoid core changes; accept provider variability |
 | Fingerprints stable but gap is at least 5 points | Capture a local canonical request diff and inspect serialization/provider behavior |
 
-- [ ] **Step 7: Complete the review checklist**
+- [x] **Step 7: Complete the review checklist**
 
 ```text
 [ ] Request JSON is unchanged by observation.
