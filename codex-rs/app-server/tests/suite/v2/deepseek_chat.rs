@@ -50,11 +50,9 @@ async fn chat_completions_app_server_turn_lifecycle() -> Result<()> {
     // Initialize / initialized handshake. The mock does not validate auth, but
     // the provider's `env_key` must be present in the child process, so set a
     // dummy value.
-    let mut mcp = TestAppServer::new_with_env(
-        codex_home.path(),
-        &[("DEEPSEEK_API_KEY", Some("test-key"))],
-    )
-    .await?;
+    let mut mcp =
+        TestAppServer::new_with_env(codex_home.path(), &[("DEEPSEEK_API_KEY", Some("test-key"))])
+            .await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     // Thread start.
