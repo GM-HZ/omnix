@@ -85,6 +85,19 @@ test *args:
 test *args:
     $env:RUST_MIN_STACK = "{{ rust_min_stack }}"; $env:NEXTEST_PROFILE = "local"; cargo nextest run --no-fail-fast @($args | Select-Object -Skip 1)
 
+# Run ONLY the paid DeepSeek prompt-cache control benchmark. This makes a real
+# network request to DeepSeek and incurs API cost, so it is ignored by default
+# and never runs in `just test` or CI. Requires DEEPSEEK_API_KEY in the
+# environment (which is preserved, not echoed). Configure via DEEPSEEK_* vars,
+# e.g. `DEEPSEEK_CACHE_PROFILE=smoke just test-deepseek-cache`.
+[unix]
+test-deepseek-cache *args:
+    RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run -p codex-core --test live_deepseek_cache --run-ignored ignored-only --no-capture "$@"
+
+[windows]
+test-deepseek-cache *args:
+    $env:RUST_MIN_STACK = "{{ rust_min_stack }}"; cargo nextest run -p codex-core --test live_deepseek_cache --run-ignored ignored-only --no-capture @($args | Select-Object -Skip 1)
+
 # Run from the repository root so scripts that resolve paths from `cwd` see
 # the same layout they use in GitHub Actions.
 [no-cd]
