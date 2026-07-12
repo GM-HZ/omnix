@@ -37,6 +37,15 @@ filter = 'test(rmcp_client) | test(humanlike_typing_1000_chars_appears_live_no_p
 slow-timeout = { period = "1m", terminate-after = 4 }
 
 [[profile.default.overrides]]
+# The paid DeepSeek cache benchmark (ignored by default) drives large
+# long-context requests — the 700K profile transfers ~700K prompt tokens per
+# round over the network. Give it a generous ceiling so `just test-deepseek-cache`
+# does not spuriously time out; it never runs in default CI.
+filter = 'test(deepseek_cache_report) | test(deepseek_cache_control_benchmark)'
+slow-timeout = { period = "120s", terminate-after = 5 }
+retries = 0
+
+[[profile.default.overrides]]
 filter = 'test(approval_matrix_covers_all_modes)'
 slow-timeout = { period = "30s", terminate-after = 2 }
 

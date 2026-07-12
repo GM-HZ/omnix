@@ -150,17 +150,14 @@ impl BenchmarkConfig {
 // Deterministic stable content (offline-testable)
 // ------------------------------------------------------------------------
 
-/// Build a deterministic block of numbered ASCII paragraphs targeting
-/// approximately `target_tokens`. The output is byte-identical for a given
-/// target, so the cacheable prefix is stable across rounds.
-fn generate_stable_document(target_tokens: usize) -> String {
-    let target_chars = target_tokens * APPROX_CHARS_PER_TOKEN;
-    let mut doc = String::with_capacity(target_chars + 128);
+/// Build a deterministic stable document of approximately `char_budget` bytes
+/// from a fixed template (only the paragraph ordinal varies). Byte-identical for
+/// a given budget, so the cacheable prefix is stable across rounds.
+fn generate_stable_document_chars(char_budget: usize) -> String {
+    let mut doc = String::with_capacity(char_budget + 128);
     let mut paragraph = 0u32;
-    while doc.len() < target_chars {
+    while doc.len() < char_budget {
         paragraph += 1;
-        // Fixed template; only the paragraph ordinal varies, and it varies
-        // deterministically, so repeated generation is byte-identical.
         doc.push_str(&format!(
             "Paragraph {paragraph:06}: reference material for prompt cache measurement. \
              This sentence is intentionally verbose and stable so the leading bytes \
@@ -168,6 +165,13 @@ fn generate_stable_document(target_tokens: usize) -> String {
         ));
     }
     doc
+}
+
+/// Build a stable document sized to approximately `target_tokens` using the
+/// coarse `APPROX_CHARS_PER_TOKEN` estimate. This is the offline/starting size;
+/// the live benchmark calibrates against real provider usage on top of it.
+fn generate_stable_document(target_tokens: usize) -> String {
+    generate_stable_document_chars(target_tokens * APPROX_CHARS_PER_TOKEN)
 }
 
 /// The system text is fixed for the whole run.
@@ -179,6 +183,30 @@ fn system_text() -> String {
 /// system message and document prefix stay byte-identical.
 fn round_question(round: u32) -> String {
     format!("Round {round}: reply with exactly the word ACK.")
+}
+
+/// Tolerance (fraction) within which the measured provider prompt tokens must
+/// land relative to the profile target for a long-context checkpoint to count.
+const CALIBRATION_TOLERANCE: f64 = 0.10;
+
+/// Given the char budget that produced `measured_tokens` provider prompt tokens,
+/// return the char budget that should hit `target_tokens`, assuming a roughly
+/// linear chars↔tokens relationship. Used by the live calibration loop to
+/// converge on real provider usage rather than a fixed chars/token guess.
+fn next_char_budget(current_chars: usize, measured_tokens: u64, target_tokens: usize) -> usize {
+    if measured_tokens == 0 {
+        // No signal yet — fall back to the coarse estimate.
+        return target_tokens * APPROX_CHARS_PER_TOKEN;
+    }
+    let scale = target_tokens as f64 / measured_tokens as f64;
+    ((current_chars as f64) * scale).round() as usize
+}
+
+/// Whether `measured_tokens` is within [`CALIBRATION_TOLERANCE`] of `target_tokens`.
+fn within_target_tolerance(measured_tokens: u64, target_tokens: usize) -> bool {
+    let target = target_tokens as f64;
+    let delta = (measured_tokens as f64 - target).abs();
+    delta <= target * CALIBRATION_TOLERANCE
 }
 
 // ------------------------------------------------------------------------
@@ -545,6 +573,46 @@ mod tests {
         assert_eq!(a, b, "document generation must be deterministic");
         // At least the requested character budget was produced.
         assert!(a.len() >= 2_000 * APPROX_CHARS_PER_TOKEN);
+    }
+
+    #[test]
+    fn char_budget_generator_hits_requested_size() {
+        let doc = generate_stable_document_chars(50_000);
+        assert!(doc.len() >= 50_000);
+        // The overshoot is bounded by one paragraph (~200 chars).
+        assert!(doc.len() < 50_000 + 400);
+        // Deterministic for a given budget.
+        assert_eq!(doc, generate_stable_document_chars(50_000));
+    }
+
+    #[test]
+    fn next_char_budget_scales_toward_target() {
+        // 300K target measured at only 197K tokens for a 1.2M-char doc: the
+        // next budget should scale UP by 300/197.
+        let next = next_char_budget(1_200_000, 197_000, 300_000);
+        let expected = (1_200_000.0_f64 * (300_000.0_f64 / 197_000.0_f64)).round() as usize;
+        assert_eq!(next, expected);
+        assert!(next > 1_200_000, "should grow when under target");
+
+        // Over target scales down.
+        let down = next_char_budget(1_000_000, 400_000, 300_000);
+        assert!(down < 1_000_000, "should shrink when over target");
+
+        // No signal falls back to the coarse estimate.
+        assert_eq!(
+            next_char_budget(0, 0, 100_000),
+            100_000 * APPROX_CHARS_PER_TOKEN
+        );
+    }
+
+    #[test]
+    fn tolerance_check_is_ten_percent() {
+        // Exactly at target and within ±10% pass; outside fails.
+        assert!(within_target_tolerance(300_000, 300_000));
+        assert!(within_target_tolerance(270_000, 300_000)); // -10%
+        assert!(within_target_tolerance(330_000, 300_000)); // +10%
+        assert!(!within_target_tolerance(197_000, 300_000)); // the old uncalibrated result
+        assert!(!within_target_tolerance(340_000, 300_000));
     }
 
     #[test]
@@ -920,13 +988,46 @@ mod live {
         (prompt, hit, miss)
     }
 
+    /// Calibrate the stable document so the provider-reported prompt tokens land
+    /// within [`CALIBRATION_TOLERANCE`] of the profile target. Sends up to a few
+    /// short probe requests, rescaling the char budget from measured usage each
+    /// time. The trailing question varies per probe, but the system + document
+    /// prefix stays fixed once a size converges, so these probes actively
+    /// pre-warm the control prefix in the provider cache. Returns the calibrated
+    /// document plus the measured prompt tokens it produced. Panics if it cannot
+    /// converge — an honest failure rather than silently accepting an off-target
+    /// size.
+    async fn calibrate_document(
+        client: &ChatCompletionsClient<ReqwestTransport>,
+        model: &str,
+        target_tokens: usize,
+    ) -> (String, u64) {
+        const MAX_PROBES: usize = 5;
+        let mut char_budget = target_tokens * APPROX_CHARS_PER_TOKEN;
+        let mut last_measured = 0u64;
+        for probe in 0..MAX_PROBES {
+            let document = generate_stable_document_chars(char_budget);
+            let question = format!("Calibration probe {probe}: reply with ACK.");
+            let (prompt, _, _) = run_once(client, build_request(model, &document, &question)).await;
+            last_measured = prompt;
+            if within_target_tolerance(prompt, target_tokens) {
+                return (document, prompt);
+            }
+            char_budget = next_char_budget(char_budget, prompt, target_tokens);
+        }
+        panic!(
+            "failed to calibrate document within {:.0}% of {target_tokens} tokens after {MAX_PROBES} probes (last measured {last_measured})",
+            CALIBRATION_TOLERANCE * 100.0
+        );
+    }
+
     pub(super) async fn run_control() {
         let env: HashMap<String, String> = std::env::vars().collect();
         let config = BenchmarkConfig::parse(|key| env.get(key).cloned())
             .expect("benchmark configuration should be valid");
 
         let mut rows: Vec<CacheRow> = Vec::new();
-        collect_control_rows(&config, &mut rows).await;
+        let _calibrated_chars = collect_control_rows(&config, &mut rows).await;
 
         println!("\n{}", render_table(&rows));
         println!(
@@ -1096,7 +1197,7 @@ mod live {
 
         // ---- Control scenario (direct API) -----------------------------
         let mut rows: Vec<CacheRow> = Vec::new();
-        collect_control_rows(&config, &mut rows).await;
+        let calibrated_chars = collect_control_rows(&config, &mut rows).await;
 
         // ---- Harness scenario (production session) ---------------------
         let capture = LayoutCaptureLayer::default();
@@ -1119,7 +1220,9 @@ mod live {
             .await
             .expect("build production DeepSeek session");
 
-        let document = generate_stable_document(config.profile.stable_prefix_tokens());
+        // Reuse the control's calibrated document size so the harness prompt is
+        // sized to the same real provider-token target.
+        let document = generate_stable_document_chars(calibrated_chars);
 
         // Warm-up turn primes the cache; wait the persistence interval.
         let warmup_prompt = format!("{document}\n\n{}", round_question(0));
@@ -1206,14 +1309,26 @@ mod live {
     }
 
     /// Shared control-collection used by both the control-only and combined
-    /// benchmarks, appending "control" rows to `rows`.
-    async fn collect_control_rows(config: &BenchmarkConfig, rows: &mut Vec<CacheRow>) {
+    /// benchmarks, appending "control" rows to `rows`. Returns the calibrated
+    /// document's char budget so the harness scenario can reuse the same size.
+    async fn collect_control_rows(config: &BenchmarkConfig, rows: &mut Vec<CacheRow>) -> usize {
         let api_key = std::env::var("DEEPSEEK_API_KEY")
             .expect("DEEPSEEK_API_KEY must be set for the paid control benchmark");
         let transport = ReqwestTransport::new(reqwest::Client::new());
         let auth: Arc<dyn codex_api::AuthProvider> = Arc::new(BearerAuthProvider::new(api_key));
         let client = ChatCompletionsClient::new(transport, provider(&config.base_url), auth);
-        let document = generate_stable_document(config.profile.stable_prefix_tokens());
+        // Calibrate the document so provider prompt tokens hit the profile
+        // target (±10%), rather than trusting the coarse chars/token estimate.
+        let (document, calibrated_tokens) = calibrate_document(
+            &client,
+            &config.model,
+            config.profile.stable_prefix_tokens(),
+        )
+        .await;
+        println!(
+            "control calibrated: profile target {} tokens -> measured {calibrated_tokens} provider tokens",
+            config.profile.stable_prefix_tokens()
+        );
 
         let (prompt, hit, miss) = run_once(
             &client,
@@ -1251,5 +1366,6 @@ mod live {
                 context_segment: 0,
             });
         }
+        document.len()
     }
 }
