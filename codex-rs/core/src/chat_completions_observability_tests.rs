@@ -6,7 +6,8 @@ use serde_json::json;
 fn assert_hex16(fp: &str) {
     assert_eq!(fp.len(), 16, "fingerprint must be 16 hex chars: {fp}");
     assert!(
-        fp.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+        fp.chars()
+            .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
         "fingerprint must be lowercase hex: {fp}"
     );
 }
@@ -95,8 +96,7 @@ fn appended_message_keeps_full_prefix() {
 
     let previous =
         ChatCompletionsRequestLayout::from_request("deepseek-chat", &messages_before, &[]);
-    let current =
-        ChatCompletionsRequestLayout::from_request("deepseek-chat", &messages_after, &[]);
+    let current = ChatCompletionsRequestLayout::from_request("deepseek-chat", &messages_after, &[]);
     let comparison = ChatCompletionsLayoutComparison::new(Some(&previous), &current);
 
     assert!(!comparison.system_changed);

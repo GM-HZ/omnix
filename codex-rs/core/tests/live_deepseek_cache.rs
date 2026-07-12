@@ -216,6 +216,87 @@ fn aggregate_steady_state_hit_rate(rows: &[CacheRow]) -> Option<f64> {
     (denom > 0).then(|| hit as f64 / denom as f64)
 }
 
+/// Aggregate steady-state hit rate for a single scenario ("control" or
+/// "harness"), warm-up excluded.
+fn scenario_steady_state_hit_rate(rows: &[CacheRow], scenario: &str) -> Option<f64> {
+    let scoped: Vec<CacheRow> = rows
+        .iter()
+        .filter(|r| r.scenario == scenario)
+        .cloned()
+        .collect();
+    aggregate_steady_state_hit_rate(&scoped)
+}
+
+/// Observed layout stability during the harness run, correlated from the
+/// `chat_completions.request_layout` diagnostics. These flags let the diagnosis
+/// distinguish "provider is flaky" from "our harness is breaking the prefix".
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct HarnessLayoutSignals {
+    tools_changed_during_turns: bool,
+    system_changed_during_turns: bool,
+    history_rewritten_during_turns: bool,
+    /// A steady-state sample immediately followed a compaction (context-window
+    /// generation changed), so a miss there is an expected reset.
+    post_compaction_sample: bool,
+}
+
+/// The first Phase-2 optimization candidate implied by the measured evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CacheDiagnosis {
+    /// Control itself did not hit cache: the provider is the variable, not us.
+    ProviderVariability,
+    /// Control hits, harness lags, and tool layout is unstable across turns.
+    ToolLayoutInstability,
+    /// Control hits, harness lags, and earlier history is being rewritten.
+    HistoryLayoutInstability,
+    /// The lagging sample immediately followed a compaction: expected reset.
+    ExpectedCacheReset,
+    /// Fingerprints are stable yet a gap persists: suspect serialization or
+    /// provider behavior, capture a canonical request diff next.
+    SerializationOrProviderBehavior,
+    /// Control and harness are within tolerance: no core change warranted.
+    WithinTolerance,
+}
+
+/// Gap (in percentage points) at or above which we treat the harness as
+/// materially worse than the control.
+const GAP_THRESHOLD_POINTS: f64 = 5.0;
+/// Hit rate the control must reach before we trust it as a healthy baseline.
+const HEALTHY_CONTROL_HIT_RATE: f64 = 0.90;
+
+/// Apply the decision matrix to measured rates and observed layout signals.
+///
+/// Rates are token-weighted steady-state hit rates in `[0, 1]`. The order of
+/// checks encodes precedence: provider health first (nothing else matters if
+/// the control can't cache), then expected resets, then the specific layout
+/// instabilities, then the stable-but-gapped fallback.
+fn diagnose(
+    control_hit_rate: Option<f64>,
+    harness_hit_rate: Option<f64>,
+    signals: HarnessLayoutSignals,
+) -> CacheDiagnosis {
+    let control = control_hit_rate.unwrap_or(0.0);
+    let harness = harness_hit_rate.unwrap_or(0.0);
+    let gap_points = (control - harness) * 100.0;
+
+    if control < HEALTHY_CONTROL_HIT_RATE {
+        return CacheDiagnosis::ProviderVariability;
+    }
+    if signals.post_compaction_sample {
+        return CacheDiagnosis::ExpectedCacheReset;
+    }
+    if gap_points >= GAP_THRESHOLD_POINTS {
+        if signals.tools_changed_during_turns {
+            return CacheDiagnosis::ToolLayoutInstability;
+        }
+        if signals.history_rewritten_during_turns {
+            return CacheDiagnosis::HistoryLayoutInstability;
+        }
+        return CacheDiagnosis::SerializationOrProviderBehavior;
+    }
+    CacheDiagnosis::WithinTolerance
+}
+
 /// Render a human-readable table of all rows.
 fn render_table(rows: &[CacheRow]) -> String {
     let mut out = String::new();
@@ -381,6 +462,88 @@ mod tests {
         assert_eq!(json["rows"].as_array().expect("rows array").len(), 2);
         assert!(json["steady_state_hit_rate"].is_number());
     }
+
+    #[test]
+    fn dual_scenario_aggregation_is_per_scenario_and_warmup_excluded() {
+        let rows = vec![
+            row("control", Phase::Warmup, 0, 0, 1_000),
+            row("control", Phase::SteadyState, 1, 950, 50),
+            row("control", Phase::SteadyState, 2, 950, 50),
+            row("harness", Phase::Warmup, 0, 0, 1_000),
+            row("harness", Phase::SteadyState, 1, 500, 500),
+            row("harness", Phase::SteadyState, 2, 500, 500),
+        ];
+
+        let control = scenario_steady_state_hit_rate(&rows, "control").expect("control rate");
+        let harness = scenario_steady_state_hit_rate(&rows, "harness").expect("harness rate");
+        assert!((control - 0.95).abs() < 1e-9, "control {control}");
+        assert!((harness - 0.50).abs() < 1e-9, "harness {harness}");
+    }
+
+    fn signals(
+        tools: bool,
+        system: bool,
+        history: bool,
+        post_compaction: bool,
+    ) -> HarnessLayoutSignals {
+        HarnessLayoutSignals {
+            tools_changed_during_turns: tools,
+            system_changed_during_turns: system,
+            history_rewritten_during_turns: history,
+            post_compaction_sample: post_compaction,
+        }
+    }
+
+    #[test]
+    fn diagnosis_low_control_blames_provider() {
+        assert_eq!(
+            diagnose(Some(0.40), Some(0.10), signals(true, true, true, false)),
+            CacheDiagnosis::ProviderVariability
+        );
+    }
+
+    #[test]
+    fn diagnosis_healthy_control_gap_with_tool_change() {
+        assert_eq!(
+            diagnose(Some(0.95), Some(0.60), signals(true, false, false, false)),
+            CacheDiagnosis::ToolLayoutInstability
+        );
+    }
+
+    #[test]
+    fn diagnosis_healthy_control_gap_with_history_rewrite() {
+        assert_eq!(
+            diagnose(Some(0.95), Some(0.60), signals(false, false, true, false)),
+            CacheDiagnosis::HistoryLayoutInstability
+        );
+    }
+
+    #[test]
+    fn diagnosis_post_compaction_is_expected_reset() {
+        // Even with a large gap, a post-compaction sample is an expected reset,
+        // and it takes precedence over layout-instability classification.
+        assert_eq!(
+            diagnose(Some(0.95), Some(0.10), signals(true, true, true, true)),
+            CacheDiagnosis::ExpectedCacheReset
+        );
+    }
+
+    #[test]
+    fn diagnosis_stable_fingerprints_with_gap_is_serialization_or_provider() {
+        assert_eq!(
+            diagnose(Some(0.95), Some(0.60), signals(false, false, false, false)),
+            CacheDiagnosis::SerializationOrProviderBehavior
+        );
+    }
+
+    #[test]
+    fn diagnosis_small_gap_is_within_tolerance() {
+        // 95% control vs 92% harness = 3-point gap, below the 5-point threshold.
+        assert_eq!(
+            diagnose(Some(0.95), Some(0.92), signals(true, true, true, false)),
+            CacheDiagnosis::WithinTolerance
+        );
+    }
 }
 
 // ------------------------------------------------------------------------
@@ -391,6 +554,15 @@ mod tests {
 #[ignore = "requires DEEPSEEK_API_KEY and incurs API cost"]
 async fn deepseek_cache_control_benchmark() {
     live::run_control().await;
+}
+
+/// Combined benchmark: runs the direct-API control and the production Codex
+/// harness against the same profile, then prints both scenarios plus a
+/// diagnosis in one report.
+#[tokio::test]
+#[ignore = "requires DEEPSEEK_API_KEY and incurs API cost"]
+async fn deepseek_cache_report() {
+    live::run_harness_and_control().await;
 }
 
 /// Network-only module. Nothing here runs unless the ignored test above is
@@ -487,18 +659,261 @@ mod live {
         let config = BenchmarkConfig::parse(|key| env.get(key).cloned())
             .expect("benchmark configuration should be valid");
 
+        let mut rows: Vec<CacheRow> = Vec::new();
+        collect_control_rows(&config, &mut rows).await;
+
+        println!("\n{}", render_table(&rows));
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&render_json(&rows)).expect("json renders")
+        );
+
+        // A low hit rate is report data, not a failure. Only structural
+        // problems (handled via expect above) fail the benchmark.
+    }
+
+    // --------------------------------------------------------------------
+    // Harness scenario: drive a real production Codex session over DeepSeek.
+    // --------------------------------------------------------------------
+
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
+    use tracing::Event;
+    use tracing::Subscriber;
+    use tracing::field::Visit;
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::Context as LayerContext;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::registry::LookupSpan;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    /// Captures `chat_completions.request_layout` diagnostics so the harness can
+    /// tell whether tools/system/history drifted across turns.
+    #[derive(Clone, Default)]
+    struct LayoutCaptureLayer {
+        signals: Arc<Mutex<HarnessLayoutSignals>>,
+    }
+
+    #[derive(Default)]
+    struct LayoutVisitor {
+        fields: BTreeMap<String, String>,
+    }
+
+    impl Visit for LayoutVisitor {
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            self.fields
+                .insert(field.name().to_string(), value.to_string());
+        }
+        fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
+            self.fields
+                .insert(field.name().to_string(), value.to_string());
+        }
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.fields
+                .insert(field.name().to_string(), format!("{value:?}"));
+        }
+    }
+
+    impl<S> Layer<S> for LayoutCaptureLayer
+    where
+        S: Subscriber + for<'a> LookupSpan<'a>,
+    {
+        fn on_event(&self, event: &Event<'_>, _ctx: LayerContext<'_, S>) {
+            if event.metadata().target() != "chat_completions.request_layout" {
+                return;
+            }
+            let mut visitor = LayoutVisitor::default();
+            event.record(&mut visitor);
+
+            let mut signals = self
+                .signals
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if visitor.fields.get("tools_changed").map(String::as_str) == Some("true") {
+                signals.tools_changed_during_turns = true;
+            }
+            if visitor.fields.get("system_changed").map(String::as_str) == Some("true") {
+                signals.system_changed_during_turns = true;
+            }
+            if let Some(reset) = visitor.fields.get("reset_reason")
+                && reset.contains("HistoryRewritten")
+            {
+                signals.history_rewritten_during_turns = true;
+            }
+        }
+    }
+
+    /// Extract the terminal `last_token_usage` after a turn completes, plus the
+    /// model context window reported alongside it.
+    fn usage_to_row(
+        scenario: &str,
+        phase: Phase,
+        round: u32,
+        usage: &codex_protocol::protocol::TokenUsage,
+        context_window: Option<i64>,
+    ) -> CacheRow {
+        let prompt = usage.input_tokens.max(0) as u64;
+        let hit = usage.cached_input_tokens.max(0) as u64;
+        let miss = prompt.saturating_sub(hit);
+        CacheRow {
+            scenario: scenario.to_string(),
+            phase,
+            round,
+            prompt_tokens: prompt,
+            hit_tokens: hit,
+            miss_tokens: miss,
+            effective_context_window: context_window,
+        }
+    }
+
+    /// Run one turn on the shared thread and return the last-turn usage plus the
+    /// model context window. Requires a token-count event; missing usage is a
+    /// hard error.
+    async fn run_harness_turn(
+        codex: &codex_core::CodexThread,
+        prompt: &str,
+    ) -> (codex_protocol::protocol::TokenUsage, Option<i64>) {
+        use codex_protocol::protocol::EventMsg;
+        use codex_protocol::protocol::Op;
+        use codex_protocol::user_input::UserInput;
+
+        codex
+            .submit(Op::UserInput {
+                items: vec![UserInput::Text {
+                    text: prompt.to_string(),
+                    text_elements: Vec::new(),
+                }],
+                final_output_json_schema: None,
+                responsesapi_client_metadata: None,
+                additional_context: Default::default(),
+                thread_settings: Default::default(),
+            })
+            .await
+            .expect("submit user input");
+
+        let mut last_usage = None;
+        let mut context_window = None;
+        loop {
+            let event = codex.next_event().await.expect("event stream");
+            match event.msg {
+                EventMsg::TokenCount(ev) => {
+                    if let Some(info) = ev.info {
+                        last_usage = Some(info.last_token_usage);
+                        context_window = info.model_context_window;
+                    }
+                }
+                EventMsg::TurnComplete(_) => break,
+                EventMsg::Error(err) => panic!("harness turn errored: {}", err.message),
+                _ => {}
+            }
+        }
+
+        (
+            last_usage.expect("harness turn must report token usage"),
+            context_window,
+        )
+    }
+
+    pub(super) async fn run_harness_and_control() {
+        use core_test_support::test_codex::test_codex;
+
+        let env: HashMap<String, String> = std::env::vars().collect();
+        let config = BenchmarkConfig::parse(|key| env.get(key).cloned())
+            .expect("benchmark configuration should be valid");
         // Read the key only at runtime; never fold it into any error or report.
+        let _ = std::env::var("DEEPSEEK_API_KEY")
+            .expect("DEEPSEEK_API_KEY must be set for the paid harness benchmark");
+
+        // ---- Control scenario (direct API) -----------------------------
+        let mut rows: Vec<CacheRow> = Vec::new();
+        collect_control_rows(&config, &mut rows).await;
+
+        // ---- Harness scenario (production session) ---------------------
+        let capture = LayoutCaptureLayer::default();
+        let subscriber = tracing_subscriber::registry().with(capture.clone());
+        let _guard = subscriber.set_default();
+
+        let deepseek_base = config.base_url.clone();
+        let model = config.model.clone();
+        let server = wiremock::MockServer::start().await;
+        let test = test_codex()
+            .with_config(move |cfg| {
+                let mut provider =
+                    codex_model_provider_info::ModelProviderInfo::create_deepseek_provider();
+                provider.base_url = Some(format!("{}/v1", deepseek_base.trim_end_matches('/')));
+                provider.supports_websockets = false;
+                cfg.model_provider = provider;
+                cfg.model = Some(model);
+            })
+            .build(&server)
+            .await
+            .expect("build production DeepSeek session");
+
+        let document = generate_stable_document(config.profile.stable_prefix_tokens());
+
+        // Warm-up turn primes the cache; wait the persistence interval.
+        let warmup_prompt = format!("{document}\n\n{}", round_question(0));
+        let (usage, ctx) = run_harness_turn(&test.codex, &warmup_prompt).await;
+        rows.push(usage_to_row("harness", Phase::Warmup, 0, &usage, ctx));
+        let mut last_context_window = ctx;
+        tokio::time::sleep(config.warmup).await;
+
+        // Steady-state turns reuse the same thread; only the question varies.
+        for round in 1..=config.steady_state_rounds {
+            let (usage, ctx) = run_harness_turn(&test.codex, &round_question(round)).await;
+            // Segment on context-window generation change (a proxy for
+            // compaction having reset the cacheable prefix).
+            let post_compaction = ctx != last_context_window && last_context_window.is_some();
+            if post_compaction {
+                capture
+                    .signals
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .post_compaction_sample = true;
+            }
+            last_context_window = ctx;
+            rows.push(usage_to_row(
+                "harness",
+                Phase::SteadyState,
+                round,
+                &usage,
+                ctx,
+            ));
+        }
+
+        let signals = *capture
+            .signals
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let control_rate = scenario_steady_state_hit_rate(&rows, "control");
+        let harness_rate = scenario_steady_state_hit_rate(&rows, "harness");
+        let diagnosis = diagnose(control_rate, harness_rate, signals);
+
+        println!("\n{}", render_table(&rows));
+        let mut report = render_json(&rows);
+        report["control_steady_state_hit_rate"] = serde_json::json!(control_rate);
+        report["harness_steady_state_hit_rate"] = serde_json::json!(harness_rate);
+        report["diagnosis"] = serde_json::json!(format!("{diagnosis:?}"));
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).expect("json renders")
+        );
+
+        // A low hit rate is report data, not a failure. Only configuration,
+        // transport, parsing, missing usage, or invariant errors fail (handled
+        // via expect/panic above).
+    }
+
+    /// Shared control-collection used by both the control-only and combined
+    /// benchmarks, appending "control" rows to `rows`.
+    async fn collect_control_rows(config: &BenchmarkConfig, rows: &mut Vec<CacheRow>) {
         let api_key = std::env::var("DEEPSEEK_API_KEY")
             .expect("DEEPSEEK_API_KEY must be set for the paid control benchmark");
-
         let transport = ReqwestTransport::new(reqwest::Client::new());
         let auth: Arc<dyn codex_api::AuthProvider> = Arc::new(BearerAuthProvider::new(api_key));
         let client = ChatCompletionsClient::new(transport, provider(&config.base_url), auth);
-
         let document = generate_stable_document(config.profile.stable_prefix_tokens());
-        let mut rows: Vec<CacheRow> = Vec::new();
 
-        // Warm-up round: populate the provider cache, then wait for persistence.
         let (prompt, hit, miss) = run_once(
             &client,
             build_request(&config.model, &document, &round_question(0)),
@@ -515,8 +930,6 @@ mod live {
         });
         tokio::time::sleep(config.warmup).await;
 
-        // Steady-state rounds: these should hit the cache if the provider is
-        // caching the stable prefix.
         for round in 1..=config.steady_state_rounds {
             let (prompt, hit, miss) = run_once(
                 &client,
@@ -533,14 +946,5 @@ mod live {
                 effective_context_window: Some(CONTROL_EFFECTIVE_CONTEXT_WINDOW),
             });
         }
-
-        println!("\n{}", render_table(&rows));
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&render_json(&rows)).expect("json renders")
-        );
-
-        // A low hit rate is report data, not a failure. Only structural
-        // problems (handled via expect above) fail the benchmark.
     }
 }
