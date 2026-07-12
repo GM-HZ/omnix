@@ -188,6 +188,7 @@ async fn process_chat_completions_sse(
 
     // Emit final usage
     if let Some(ref u) = usage {
+        emit_cache_usage_diagnostics(u);
         let _ = tx
             .send(Ok(ResponseEvent::Completed {
                 response_id: response_id.clone(),
@@ -202,6 +203,53 @@ async fn process_chat_completions_sse(
             }))
             .await;
     }
+}
+
+/// Response-side prompt-cache diagnostics derived from the provider's final
+/// usage report. Content-free (counts and a ratio only), so it is safe to log.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct CacheUsageDiagnostics {
+    prompt_tokens: u32,
+    hit_tokens: u32,
+    miss_tokens: u32,
+    /// Token-weighted hit ratio `hit / (hit + miss)`, or `None` when there is
+    /// no cache signal (both counts zero) so we never report a misleading 0.0.
+    hit_ratio: Option<f64>,
+    /// Whether `hit + miss == prompt_tokens`. When false, the provider's cache
+    /// split does not reconcile with its own prompt count.
+    usage_consistent: bool,
+}
+
+impl CacheUsageDiagnostics {
+    fn from_usage(usage: &ChunkUsage) -> Self {
+        let hit = usage.prompt_cache_hit_tokens;
+        let miss = usage.prompt_cache_miss_tokens;
+        let denom = hit + miss;
+        let hit_ratio = (denom > 0).then(|| f64::from(hit) / f64::from(denom));
+        Self {
+            prompt_tokens: usage.prompt_tokens,
+            hit_tokens: hit,
+            miss_tokens: miss,
+            hit_ratio,
+            usage_consistent: denom == usage.prompt_tokens,
+        }
+    }
+}
+
+/// Emit a `chat_completions.cache_usage` debug event from the provider's final
+/// usage. Uses the enclosing tracing span for correlation; does not touch
+/// `ResponseEvent` or introduce a public request identifier.
+fn emit_cache_usage_diagnostics(usage: &ChunkUsage) {
+    let diagnostics = CacheUsageDiagnostics::from_usage(usage);
+    debug!(
+        target: "chat_completions.cache_usage",
+        prompt_tokens = diagnostics.prompt_tokens,
+        hit_tokens = diagnostics.hit_tokens,
+        miss_tokens = diagnostics.miss_tokens,
+        hit_ratio = diagnostics.hit_ratio.unwrap_or(-1.0),
+        usage_consistent = diagnostics.usage_consistent,
+        "observed chat completions prompt cache usage"
+    );
 }
 
 fn accumulate_tool_call(slots: &mut Vec<ToolCallSlot>, tc: &ChunkDeltaToolCall) {
@@ -568,5 +616,46 @@ mod tests {
                     && call_id == "call_1"
                     && arguments == "{\"command\":[\"ls\"]}"
         );
+    }
+
+    fn usage(prompt: u32, hit: u32, miss: u32) -> ChunkUsage {
+        ChunkUsage {
+            prompt_tokens: prompt,
+            completion_tokens: 0,
+            total_tokens: prompt,
+            prompt_cache_hit_tokens: hit,
+            prompt_cache_miss_tokens: miss,
+        }
+    }
+
+    /// With no cache signal at all (hit=miss=0) the ratio must be unavailable,
+    /// never a misleading 0.0.
+    #[test]
+    fn cache_ratio_unavailable_without_signal() {
+        let diagnostics = CacheUsageDiagnostics::from_usage(&usage(0, 0, 0));
+        assert_eq!(diagnostics.hit_ratio, None);
+    }
+
+    /// A 90/10 split yields a 0.9 token-weighted hit ratio.
+    #[test]
+    fn cache_ratio_reports_token_weighted_hit_rate() {
+        let diagnostics = CacheUsageDiagnostics::from_usage(&usage(100, 90, 10));
+        assert_eq!(diagnostics.hit_ratio, Some(0.9));
+    }
+
+    /// A full miss reports 0.0 (a real, available signal — distinct from the
+    /// no-signal case above).
+    #[test]
+    fn cache_ratio_reports_zero_on_full_miss() {
+        let diagnostics = CacheUsageDiagnostics::from_usage(&usage(100, 0, 100));
+        assert_eq!(diagnostics.hit_ratio, Some(0.0));
+    }
+
+    /// Consistency is judged against `prompt_tokens` independently of the ratio:
+    /// hit+miss==prompt is consistent; a mismatch is flagged.
+    #[test]
+    fn cache_usage_consistency_checks_prompt_tokens() {
+        assert!(CacheUsageDiagnostics::from_usage(&usage(100, 90, 10)).usage_consistent);
+        assert!(!CacheUsageDiagnostics::from_usage(&usage(1000, 700, 100)).usage_consistent);
     }
 }
