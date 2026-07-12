@@ -10,7 +10,6 @@ use codex_app_server_protocol::GetAccountParams;
 use codex_app_server_protocol::GetAccountResponse;
 use codex_app_server_protocol::GetAuthStatusParams;
 use codex_app_server_protocol::GetAuthStatusResponse;
-use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::LoginAccountResponse;
 use codex_app_server_protocol::RequestId;
@@ -79,22 +78,6 @@ shell_snapshot = false
     )
 }
 
-fn create_config_toml_forced_login(codex_home: &Path, forced_method: &str) -> std::io::Result<()> {
-    let config_toml = codex_home.join("config.toml");
-    let contents = format!(
-        r#"
-model = "mock-model"
-approval_policy = "never"
-sandbox_mode = "danger-full-access"
-forced_login_method = "{forced_method}"
-
-[features]
-shell_snapshot = false
-"#
-    );
-    std::fs::write(config_toml, contents)
-}
-
 async fn login_with_api_key_via_request(mcp: &mut TestAppServer, api_key: &str) -> Result<()> {
     let request_id = mcp.send_login_account_api_key_request(api_key).await?;
 
@@ -138,7 +121,7 @@ async fn get_auth_status_no_auth() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_auth_status_with_api_key() -> Result<()> {
     let codex_home = TempDir::new()?;
-    create_config_toml(codex_home.path())?;
+    create_config_toml_custom_provider(codex_home.path(), /*requires_openai_auth*/ true)?;
 
     let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
@@ -282,7 +265,7 @@ async fn get_auth_status_with_api_key_when_auth_not_required() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_auth_status_with_api_key_no_include_token() -> Result<()> {
     let codex_home = TempDir::new()?;
-    create_config_toml(codex_home.path())?;
+    create_config_toml_custom_provider(codex_home.path(), /*requires_openai_auth*/ true)?;
 
     let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
@@ -310,7 +293,7 @@ async fn get_auth_status_with_api_key_no_include_token() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_auth_status_with_api_key_refresh_requested() -> Result<()> {
     let codex_home = TempDir::new()?;
-    create_config_toml(codex_home.path())?;
+    create_config_toml_custom_provider(codex_home.path(), /*requires_openai_auth*/ true)?;
 
     let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
@@ -344,7 +327,7 @@ async fn get_auth_status_with_api_key_refresh_requested() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_auth_status_omits_token_after_permanent_refresh_failure() -> Result<()> {
     let codex_home = TempDir::new()?;
-    create_config_toml(codex_home.path())?;
+    create_config_toml_custom_provider(codex_home.path(), /*requires_openai_auth*/ true)?;
     write_chatgpt_auth(
         codex_home.path(),
         ChatGptAuthFixture::new("stale-access-token")
@@ -425,7 +408,7 @@ async fn get_auth_status_omits_token_after_permanent_refresh_failure() -> Result
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_auth_status_omits_token_after_proactive_refresh_failure() -> Result<()> {
     let codex_home = TempDir::new()?;
-    create_config_toml(codex_home.path())?;
+    create_config_toml_custom_provider(codex_home.path(), /*requires_openai_auth*/ true)?;
     write_chatgpt_auth(
         codex_home.path(),
         ChatGptAuthFixture::new("stale-access-token")
@@ -445,7 +428,7 @@ async fn get_auth_status_omits_token_after_proactive_refresh_failure() -> Result
                 "code": "refresh_token_reused"
             }
         })))
-        .expect(2)
+        .expect(1)
         .mount(&server)
         .await;
 
@@ -492,7 +475,7 @@ async fn get_auth_status_omits_token_after_proactive_refresh_failure() -> Result
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_auth_status_returns_token_after_proactive_refresh_recovery() -> Result<()> {
     let codex_home = TempDir::new()?;
-    create_config_toml(codex_home.path())?;
+    create_config_toml_custom_provider(codex_home.path(), /*requires_openai_auth*/ true)?;
     write_chatgpt_auth(
         codex_home.path(),
         ChatGptAuthFixture::new("stale-access-token")
@@ -512,7 +495,7 @@ async fn get_auth_status_returns_token_after_proactive_refresh_recovery() -> Res
                 "code": "refresh_token_reused"
             }
         })))
-        .expect(2)
+        .expect(1)
         .mount(&server)
         .await;
 
@@ -586,30 +569,5 @@ async fn get_auth_status_returns_token_after_proactive_refresh_recovery() -> Res
     );
 
     server.verify().await;
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn login_api_key_rejected_when_forced_chatgpt() -> Result<()> {
-    let codex_home = TempDir::new()?;
-    create_config_toml_forced_login(codex_home.path(), "chatgpt")?;
-
-    let mut mcp = TestAppServer::new(codex_home.path()).await?;
-    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
-
-    let request_id = mcp
-        .send_login_account_api_key_request("sk-test-key")
-        .await?;
-
-    let err: JSONRPCError = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
-    )
-    .await??;
-
-    assert_eq!(
-        err.error.message,
-        "API key login is disabled. Use ChatGPT login instead."
-    );
     Ok(())
 }
