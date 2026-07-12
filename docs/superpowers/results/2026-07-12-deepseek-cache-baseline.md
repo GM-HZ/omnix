@@ -37,7 +37,7 @@ scenario ran first in the same serialized invocation and left a warm prefix on
 the shared account. This is expected and contained now that both scenarios run
 in one serialized test rather than two concurrent ones.
 
-## Normal profile (~8K-token stable prefix), 3 steady-state rounds
+## Normal profile (~8K-token stable prefix), 3 warm-cache steady-state runs
 
 Three consecutive runs produced **byte-identical** aggregates:
 
@@ -48,9 +48,16 @@ Three consecutive runs produced **byte-identical** aggregates:
 | harness steady-state hit rate | 0.98297 | 0.98297 | 0.98297 |
 | harness steady-state miss tokens | 366 | 366 | 366 |
 | tools_changed_during_turns | false | false | false |
+| system_changed_during_turns | false | false | false |
 | history_rewritten_during_turns | false | false | false |
-| post_compaction_sample | false | false | false |
 | diagnosis | WithinTolerance | WithinTolerance | WithinTolerance |
+
+**These are three warm-cache steady-state runs, not three independent cold
+baselines.** DeepSeek's prompt cache persists across requests and across test
+invocations, so byte-identical results demonstrate that the *steady-state warm
+cache is reproducible* — they do not each re-exercise "cold start → persist →
+hit" from scratch. For a true cold baseline, prepend a per-run unique namespace
+to the stable prefix so each run misses on its first request.
 
 ## Interpretation (decision matrix)
 
@@ -59,13 +66,17 @@ Three consecutive runs produced **byte-identical** aggregates:
 - **The Codex harness does not break the cacheable prefix.** Harness steady-state
   hit rate ≈ 0.98 and clears the same absolute bar on its own. No tool-order,
   system, or history-rewrite instability was observed across turns.
-- **Cross-scenario comparison uses absolute miss tokens, not a percentage gap.**
+- **Per-scenario figures are trend signals, not cross-scenario comparisons.**
   The control (~1.4K/8K prompt, no tools) and harness (~3.2K prompt with system
-  + tools + growing history) carry different stable-prefix lengths, so their hit
-  percentages are not directly comparable. Steady-state miss tokens
-  (control 183 vs harness 366 in normal) are the comparable signal.
+  + tools + growing history) carry different system prompts, tools, history, and
+  per-round tails. Neither their hit percentages nor their absolute miss counts
+  are directly comparable: 366 harness misses vs 183 control misses does **not**
+  mean the harness caused 183 extra misses. Each scenario is judged on its own
+  absolute health bar and watched for its own trend across runs.
 
-**Conclusion:** evidence falls on the "control/harness both healthy" branch of
-the decision matrix → **no `codex-core` change is warranted for prompt caching.**
-Phase 2 optimization is not indicated by this data. Re-run after any change to
-the system prompt, tool set/order, or history-conversion path.
+**Conclusion:** evidence falls on the "control healthy AND harness healthy on
+its own bar" branch of the decision matrix → **no `codex-core` change is
+warranted for prompt caching.** Phase 2 optimization is not indicated by this
+data. Re-run after any change to the system prompt, tool set/order, or
+history-conversion path.
+

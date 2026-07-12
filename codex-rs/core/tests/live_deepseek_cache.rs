@@ -197,6 +197,14 @@ struct CacheRow {
     /// guardrail is reported separately as `profile_guardrail_tokens`, never
     /// mixed into this column.
     model_context_window: Option<i64>,
+    /// This steady-state round immediately followed a context reset (compaction
+    /// or an earlier-message rewrite), so its miss is an expected reset rather
+    /// than evidence of a caching problem. Such rows are excluded from
+    /// steady-state hit-rate aggregation instead of overriding the whole run.
+    post_compaction: bool,
+    /// Context segment ordinal: 0 for the initial segment, incremented on each
+    /// reset. Lets the report compute a per-segment hit rate.
+    context_segment: u32,
 }
 
 impl CacheRow {
@@ -206,12 +214,19 @@ impl CacheRow {
     }
 }
 
-/// Aggregate steady-state rows (warm-up excluded) by summing token counts
-/// *before* computing the rate, so large rounds are weighted correctly.
+/// Aggregate steady-state rows into a hit rate, summing token counts *before*
+/// dividing so large rounds are weighted correctly. Warm-up rounds and the
+/// individual post-compaction reset rows are both excluded, so a single reset
+/// among many ordinary rounds cannot skew — or mask — the steady-state result.
+/// Returns `None` when no eligible rounds remain (e.g. every steady-state round
+/// was a reset), which the diagnosis treats as "cannot assess".
 fn aggregate_steady_state_hit_rate(rows: &[CacheRow]) -> Option<f64> {
     let mut hit = 0u64;
     let mut miss = 0u64;
-    for row in rows.iter().filter(|r| r.phase == Phase::SteadyState) {
+    for row in rows
+        .iter()
+        .filter(|r| r.phase == Phase::SteadyState && !r.post_compaction)
+    {
         hit += row.hit_tokens;
         miss += row.miss_tokens;
     }
@@ -220,7 +235,7 @@ fn aggregate_steady_state_hit_rate(rows: &[CacheRow]) -> Option<f64> {
 }
 
 /// Aggregate steady-state hit rate for a single scenario ("control" or
-/// "harness"), warm-up excluded.
+/// "harness"), warm-up and post-compaction reset rows excluded.
 fn scenario_steady_state_hit_rate(rows: &[CacheRow], scenario: &str) -> Option<f64> {
     let scoped: Vec<CacheRow> = rows
         .iter()
@@ -230,17 +245,51 @@ fn scenario_steady_state_hit_rate(rows: &[CacheRow], scenario: &str) -> Option<f
     aggregate_steady_state_hit_rate(&scoped)
 }
 
-/// Total steady-state miss tokens for a single scenario, warm-up excluded.
+/// Total steady-state miss tokens for a single scenario, warm-up and reset rows
+/// excluded.
 ///
-/// Miss tokens are the comparability-safe cross-scenario signal: unlike hit
-/// *percentages* (which depend on each scenario's stable-prefix length), an
-/// absolute count of prompt tokens that had to be re-processed is meaningful on
-/// its own and can be compared per turn.
+/// Reported **per scenario for trend analysis only**. Absolute miss counts
+/// depend on each scenario's system prompt, tools, history, and per-round tail,
+/// so the control and harness totals are NOT directly comparable: their
+/// difference is not an attributable cross-scenario signal (183 vs 366 does not
+/// mean the harness caused 183 extra misses). Watch each scenario's own trend
+/// across runs instead of subtracting the two.
 fn scenario_steady_state_miss_tokens(rows: &[CacheRow], scenario: &str) -> u64 {
     rows.iter()
-        .filter(|r| r.scenario == scenario && r.phase == Phase::SteadyState)
+        .filter(|r| r.scenario == scenario && r.phase == Phase::SteadyState && !r.post_compaction)
         .map(|r| r.miss_tokens)
         .sum()
+}
+
+/// Per-segment steady-state hit rates for a scenario, in segment order. A new
+/// segment begins at each context reset; reporting them separately (rather than
+/// folding a reset into one number) is what keeps a single compaction from
+/// masking the rest of the run.
+fn scenario_segment_hit_rates(rows: &[CacheRow], scenario: &str) -> Vec<(u32, Option<f64>)> {
+    let mut segments: Vec<u32> = rows
+        .iter()
+        .filter(|r| r.scenario == scenario && r.phase == Phase::SteadyState)
+        .map(|r| r.context_segment)
+        .collect();
+    segments.sort_unstable();
+    segments.dedup();
+    segments
+        .into_iter()
+        .map(|segment| {
+            let mut hit = 0u64;
+            let mut miss = 0u64;
+            for row in rows.iter().filter(|r| {
+                r.scenario == scenario
+                    && r.phase == Phase::SteadyState
+                    && r.context_segment == segment
+            }) {
+                hit += row.hit_tokens;
+                miss += row.miss_tokens;
+            }
+            let denom = hit + miss;
+            (segment, (denom > 0).then(|| hit as f64 / denom as f64))
+        })
+        .collect()
 }
 
 /// Observed layout stability during the harness run, correlated from the
@@ -251,9 +300,6 @@ struct HarnessLayoutSignals {
     tools_changed_during_turns: bool,
     system_changed_during_turns: bool,
     history_rewritten_during_turns: bool,
-    /// A steady-state sample immediately followed a compaction (context-window
-    /// generation changed), so a miss there is an expected reset.
-    post_compaction_sample: bool,
 }
 
 /// The first Phase-2 optimization candidate implied by the measured evidence.
@@ -261,13 +307,16 @@ struct HarnessLayoutSignals {
 enum CacheDiagnosis {
     /// Control itself did not hit cache: the provider is the variable, not us.
     ProviderVariability,
+    /// Control hits, harness lags, and the system prompt is unstable across turns.
+    SystemLayoutInstability,
     /// Control hits, harness lags, and tool layout is unstable across turns.
     ToolLayoutInstability,
     /// Control hits, harness lags, and earlier history is being rewritten.
     HistoryLayoutInstability,
-    /// The lagging sample immediately followed a compaction: expected reset.
+    /// Every steady-state round was a post-reset sample, so there is no
+    /// non-reset data to assess the harness with.
     ExpectedCacheReset,
-    /// Fingerprints are stable yet a gap persists: suspect serialization or
+    /// Fingerprints are stable yet the harness lags: suspect serialization or
     /// provider behavior, capture a canonical request diff next.
     SerializationOrProviderBehavior,
     /// Control and harness are within tolerance: no core change warranted.
@@ -282,27 +331,30 @@ enum CacheDiagnosis {
 /// carries the full Codex system prompt, tools, and a growing history (~3K+),
 /// so their hit *percentages* are not directly comparable — a higher harness
 /// percentage would not prove the harness avoids extra misses, and a lower one
-/// would not prove it causes them. Comparing each against an absolute bar, plus
-/// the per-scenario miss-token counts in the report, avoids that trap.
+/// would not prove it causes them. Each is judged against this absolute bar; the
+/// per-scenario miss-token counts in the report are for per-scenario trend only.
 const HEALTHY_HIT_RATE: f64 = 0.90;
 
 /// Apply the decision matrix to measured per-scenario rates and observed layout
 /// signals.
 ///
-/// Rates are token-weighted steady-state hit rates in `[0, 1]`. Precedence:
+/// Both rates are token-weighted steady-state hit rates in `[0, 1]` computed
+/// with post-compaction reset rounds already excluded (see
+/// [`aggregate_steady_state_hit_rate`]), so a single reset can neither skew nor
+/// mask the assessment. `harness_hit_rate` is `None` only when every harness
+/// steady-state round was a reset. Precedence:
 /// 1. If the control cannot cache, nothing is attributable to the harness.
-/// 2. A post-compaction sample is an expected reset regardless of rate.
-/// 3. If the harness caches healthily on its own bar, we are done — the
-///    provider caches and so do we.
+/// 2. If there is no non-reset harness data at all, we cannot assess it.
+/// 3. If the harness caches healthily on its own bar, we are done.
 /// 4. Otherwise the provider caches but the harness does not: attribute to the
-///    observed layout instability (tools, then history, then serialization).
+///    observed layout instability (system, then tools, then history, then
+///    serialization/provider behavior).
 fn diagnose(
     control_hit_rate: Option<f64>,
     harness_hit_rate: Option<f64>,
     signals: HarnessLayoutSignals,
 ) -> CacheDiagnosis {
     let control = control_hit_rate.unwrap_or(0.0);
-    let harness = harness_hit_rate.unwrap_or(0.0);
 
     // The control establishes whether the provider caches stable prefixes at
     // all. If it does not, nothing can be attributed to the harness.
@@ -310,10 +362,12 @@ fn diagnose(
         return CacheDiagnosis::ProviderVariability;
     }
 
-    // A post-compaction sample is an expected reset regardless of rate.
-    if signals.post_compaction_sample {
+    // With every steady-state round excluded as a reset, there is no non-reset
+    // sample left to judge the harness — an honest "cannot assess" rather than a
+    // clean bill of health.
+    let Some(harness) = harness_hit_rate else {
         return CacheDiagnosis::ExpectedCacheReset;
-    }
+    };
 
     // The provider caches; judge the harness on its OWN absolute health rather
     // than on a percentage subtracted from the control. If the harness also
@@ -322,7 +376,12 @@ fn diagnose(
         return CacheDiagnosis::WithinTolerance;
     }
 
-    // Provider caches, but the harness does not — attribute to layout.
+    // Provider caches, but the harness does not — attribute to the observed
+    // layout instability, most-fundamental-prefix-first: the system message
+    // leads the request, then tools, then history.
+    if signals.system_changed_during_turns {
+        return CacheDiagnosis::SystemLayoutInstability;
+    }
     if signals.tools_changed_during_turns {
         return CacheDiagnosis::ToolLayoutInstability;
     }
@@ -364,10 +423,11 @@ fn render_table(rows: &[CacheRow]) -> String {
 
 /// Render all rows plus per-scenario aggregates as a JSON object.
 ///
-/// Cross-scenario comparison uses absolute steady-state **miss tokens** and
-/// each scenario's own hit rate, never a subtraction of the two hit
-/// percentages — the control and harness carry different stable-prefix lengths,
-/// so their percentages are not directly comparable.
+/// All per-scenario figures — hit rates AND absolute miss-token totals — are
+/// reported for that scenario's own trend only. The control and harness carry
+/// different system prompts, tools, history, and per-round tails, so neither
+/// their percentages nor their miss counts are directly comparable and their
+/// difference is not an attributable cross-scenario signal.
 fn render_json(rows: &[CacheRow]) -> serde_json::Value {
     let row_values: Vec<serde_json::Value> = rows
         .iter()
@@ -389,7 +449,7 @@ fn render_json(rows: &[CacheRow]) -> serde_json::Value {
         "steady_state_hit_rate": aggregate_steady_state_hit_rate(rows),
         "control_steady_state_miss_tokens": scenario_steady_state_miss_tokens(rows, "control"),
         "harness_steady_state_miss_tokens": scenario_steady_state_miss_tokens(rows, "harness"),
-        "comparability_note": "hit rates are per-scenario and not directly comparable across scenarios (different stable-prefix lengths); compare absolute miss tokens instead",
+        "comparability_note": "hit rates and miss-token totals are per-scenario only; the control and harness carry different system prompts, tools, history, and per-round tails, so neither their hit percentages nor their absolute miss counts are directly comparable — watch each scenario's own trend across runs, do not subtract or attribute across scenarios",
     })
 }
 
@@ -469,6 +529,30 @@ mod tests {
             hit_tokens: hit,
             miss_tokens: miss,
             model_context_window: Some(60_000),
+            post_compaction: false,
+            context_segment: 0,
+        }
+    }
+
+    /// A steady-state row that immediately followed a context reset, opening the
+    /// given segment. Excluded from steady-state aggregation.
+    fn reset_row(
+        scenario: &str,
+        round: u32,
+        hit: u64,
+        miss: u64,
+        context_segment: u32,
+    ) -> CacheRow {
+        CacheRow {
+            scenario: scenario.to_string(),
+            phase: Phase::SteadyState,
+            round,
+            prompt_tokens: hit + miss,
+            hit_tokens: hit,
+            miss_tokens: miss,
+            model_context_window: Some(60_000),
+            post_compaction: true,
+            context_segment,
         }
     }
 
@@ -505,7 +589,7 @@ mod tests {
         let json = render_json(&rows);
         assert_eq!(json["rows"].as_array().expect("rows array").len(), 2);
         assert!(json["steady_state_hit_rate"].is_number());
-        // Comparability-safe cross-scenario signals are present.
+        // Per-scenario (trend-only) miss-token totals are present.
         assert!(json["control_steady_state_miss_tokens"].is_number());
         assert!(json["harness_steady_state_miss_tokens"].is_number());
         assert!(json["comparability_note"].is_string());
@@ -543,17 +627,11 @@ mod tests {
         assert!((harness - 0.50).abs() < 1e-9, "harness {harness}");
     }
 
-    fn signals(
-        tools: bool,
-        system: bool,
-        history: bool,
-        post_compaction: bool,
-    ) -> HarnessLayoutSignals {
+    fn signals(tools: bool, system: bool, history: bool) -> HarnessLayoutSignals {
         HarnessLayoutSignals {
             tools_changed_during_turns: tools,
             system_changed_during_turns: system,
             history_rewritten_during_turns: history,
-            post_compaction_sample: post_compaction,
         }
     }
 
@@ -563,8 +641,17 @@ mod tests {
         // prefixes, so nothing is attributable to the harness — even with every
         // layout signal set.
         assert_eq!(
-            diagnose(Some(0.40), Some(0.10), signals(true, true, true, false)),
+            diagnose(Some(0.40), Some(0.10), signals(true, true, true)),
             CacheDiagnosis::ProviderVariability
+        );
+    }
+
+    #[test]
+    fn diagnosis_system_change_takes_priority_over_tools_and_history() {
+        // The system message leads the request, so its instability dominates.
+        assert_eq!(
+            diagnose(Some(0.95), Some(0.60), signals(true, true, true)),
+            CacheDiagnosis::SystemLayoutInstability
         );
     }
 
@@ -573,7 +660,7 @@ mod tests {
         // Provider caches (control healthy) but the harness misses on its own
         // absolute bar, with tool layout changing across turns.
         assert_eq!(
-            diagnose(Some(0.95), Some(0.60), signals(true, false, false, false)),
+            diagnose(Some(0.95), Some(0.60), signals(true, false, false)),
             CacheDiagnosis::ToolLayoutInstability
         );
     }
@@ -581,17 +668,20 @@ mod tests {
     #[test]
     fn diagnosis_provider_caches_harness_unhealthy_with_history_rewrite() {
         assert_eq!(
-            diagnose(Some(0.95), Some(0.60), signals(false, false, true, false)),
+            diagnose(Some(0.95), Some(0.60), signals(false, false, true)),
             CacheDiagnosis::HistoryLayoutInstability
         );
     }
 
     #[test]
-    fn diagnosis_post_compaction_is_expected_reset() {
-        // A post-compaction sample is an expected reset and takes precedence
-        // over layout-instability classification, even at a low harness rate.
+    fn diagnosis_only_expected_reset_when_no_non_reset_data() {
+        // `harness_hit_rate == None` means every steady-state round was excluded
+        // as a reset, so there is nothing left to assess — an honest "cannot
+        // assess", not a clean bill of health. This is the ONLY path to
+        // ExpectedCacheReset: a single reset among healthy rounds does not reach
+        // here because it is excluded from the aggregate, leaving a real rate.
         assert_eq!(
-            diagnose(Some(0.95), Some(0.10), signals(true, true, true, true)),
+            diagnose(Some(0.95), None, signals(true, true, true)),
             CacheDiagnosis::ExpectedCacheReset
         );
     }
@@ -599,7 +689,7 @@ mod tests {
     #[test]
     fn diagnosis_stable_fingerprints_but_harness_unhealthy_is_serialization_or_provider() {
         assert_eq!(
-            diagnose(Some(0.95), Some(0.60), signals(false, false, false, false)),
+            diagnose(Some(0.95), Some(0.60), signals(false, false, false)),
             CacheDiagnosis::SerializationOrProviderBehavior
         );
     }
@@ -609,7 +699,7 @@ mod tests {
         // Each scenario clears the absolute health bar on its own; no gap
         // subtraction is involved.
         assert_eq!(
-            diagnose(Some(0.95), Some(0.92), signals(true, true, true, false)),
+            diagnose(Some(0.95), Some(0.92), signals(true, true, true)),
             CacheDiagnosis::WithinTolerance
         );
     }
@@ -620,15 +710,70 @@ mod tests {
         // read as proof of anything: the two workloads have different stable
         // prefix lengths. Both healthy on their own bar => WithinTolerance.
         assert_eq!(
-            diagnose(Some(0.93), Some(0.98), signals(false, false, false, false)),
+            diagnose(Some(0.93), Some(0.98), signals(false, false, false)),
             CacheDiagnosis::WithinTolerance
         );
         // And a harness far above an unhealthy control is still ProviderVariability:
         // if the provider itself is not caching the control, the harness number
         // cannot be trusted as evidence the harness is fine.
         assert_eq!(
-            diagnose(Some(0.50), Some(0.98), signals(false, false, false, false)),
+            diagnose(Some(0.50), Some(0.98), signals(false, false, false)),
             CacheDiagnosis::ProviderVariability
+        );
+    }
+
+    #[test]
+    fn single_compaction_round_is_excluded_not_masking_the_run() {
+        // Five healthy steady-state rounds and one post-compaction reset round.
+        // The reset row is excluded from the aggregate, so the healthy rounds
+        // still dominate — a single compaction must NOT flip the whole run to
+        // "expected reset".
+        let mut rows = vec![
+            row("harness", Phase::Warmup, 0, 0, 1_000),
+            row("harness", Phase::SteadyState, 1, 950, 50),
+            row("harness", Phase::SteadyState, 2, 950, 50),
+            reset_row("harness", 3, 0, 2_000, 1), // compaction: full miss, excluded
+            row("harness", Phase::SteadyState, 4, 950, 50),
+            row("harness", Phase::SteadyState, 5, 950, 50),
+        ];
+        // Fix up post-reset rows to sit in the new segment for segment reporting.
+        rows[4].context_segment = 1;
+        rows[5].context_segment = 1;
+
+        // The reset round is excluded, so the aggregate reflects only the four
+        // healthy rounds (0.95), not the full-miss reset.
+        let rate = scenario_steady_state_hit_rate(&rows, "harness").expect("rate");
+        assert!((rate - 0.95).abs() < 1e-9, "rate {rate}");
+
+        // And the diagnosis is healthy, not ExpectedCacheReset.
+        assert_eq!(
+            diagnose(Some(0.99), Some(rate), signals(false, false, false)),
+            CacheDiagnosis::WithinTolerance
+        );
+
+        // Per-segment reporting still surfaces both segments.
+        let segments = scenario_segment_hit_rates(&rows, "harness");
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].0, 0);
+        assert_eq!(segments[1].0, 1);
+    }
+
+    #[test]
+    fn all_rounds_reset_yields_no_assessable_rate() {
+        let rows = vec![
+            row("harness", Phase::Warmup, 0, 0, 1_000),
+            reset_row("harness", 1, 0, 2_000, 1),
+            reset_row("harness", 2, 0, 2_000, 2),
+        ];
+        // Every steady-state round was a reset => no assessable rate.
+        assert_eq!(scenario_steady_state_hit_rate(&rows, "harness"), None);
+        assert_eq!(
+            diagnose(
+                Some(0.99),
+                scenario_steady_state_hit_rate(&rows, "harness"),
+                signals(false, false, false)
+            ),
+            CacheDiagnosis::ExpectedCacheReset
         );
     }
 }
@@ -839,6 +984,8 @@ mod live {
         round: u32,
         usage: &codex_protocol::protocol::TokenUsage,
         context_window: Option<i64>,
+        post_compaction: bool,
+        context_segment: u32,
     ) -> CacheRow {
         let prompt = usage.input_tokens.max(0) as u64;
         let hit = usage.cached_input_tokens.max(0) as u64;
@@ -851,6 +998,8 @@ mod live {
             hit_tokens: hit,
             miss_tokens: miss,
             model_context_window: context_window,
+            post_compaction,
+            context_segment,
         }
     }
 
@@ -942,36 +1091,47 @@ mod live {
         // Warm-up turn primes the cache; wait the persistence interval.
         let warmup_prompt = format!("{document}\n\n{}", round_question(0));
         let (usage, ctx) = run_harness_turn(&test.codex, &warmup_prompt).await;
-        rows.push(usage_to_row("harness", Phase::Warmup, 0, &usage, ctx));
+        // Seed the compaction baseline from the warm-up prompt so a reset
+        // between warm-up and the first steady-state round is still detected.
+        let mut previous_prompt_tokens = usage.input_tokens.max(0) as u64;
+        rows.push(usage_to_row(
+            "harness",
+            Phase::Warmup,
+            0,
+            &usage,
+            ctx,
+            /*post_compaction*/ false,
+            /*context_segment*/ 0,
+        ));
         tokio::time::sleep(config.warmup).await;
 
         // Steady-state turns reuse the same thread; only the question varies.
-        // Detect compaction from an actual prompt-token DROP between successive
-        // rounds: within a single reused thread the prompt only grows as history
-        // accumulates, so a decrease means the history was compacted (or an
-        // earlier turn was rewritten), which resets the cacheable prefix. The
+        // Detect compaction from an actual prompt-token DROP relative to the
+        // previous turn: within a single reused thread the prompt only grows as
+        // history accumulates, so a decrease means the history was compacted (or
+        // an earlier turn was rewritten), which resets the cacheable prefix. The
         // model's context window is capacity and stays constant, so it cannot
         // serve as this signal. A HistoryRewritten layout reset (captured via
-        // tracing) corroborates the same event.
-        let mut previous_prompt_tokens: Option<u64> = None;
+        // tracing) corroborates the same event. Each reset opens a new context
+        // segment; the reset round itself is flagged so it is excluded from the
+        // steady-state aggregate rather than overriding the whole diagnosis.
+        let mut context_segment = 0u32;
         for round in 1..=config.steady_state_rounds {
             let (usage, ctx) = run_harness_turn(&test.codex, &round_question(round)).await;
             let prompt_tokens = usage.input_tokens.max(0) as u64;
-            let compacted = previous_prompt_tokens.is_some_and(|prev| prompt_tokens < prev);
+            let compacted = prompt_tokens < previous_prompt_tokens;
             if compacted {
-                capture
-                    .signals
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .post_compaction_sample = true;
+                context_segment += 1;
             }
-            previous_prompt_tokens = Some(prompt_tokens);
+            previous_prompt_tokens = prompt_tokens;
             rows.push(usage_to_row(
                 "harness",
                 Phase::SteadyState,
                 round,
                 &usage,
                 ctx,
+                /*post_compaction*/ compacted,
+                context_segment,
             ));
         }
 
@@ -990,9 +1150,17 @@ mod live {
         report["profile_guardrail_tokens"] = serde_json::json!(PROFILE_GUARDRAIL_TOKENS);
         report["tools_changed_during_turns"] =
             serde_json::json!(signals.tools_changed_during_turns);
+        report["system_changed_during_turns"] =
+            serde_json::json!(signals.system_changed_during_turns);
         report["history_rewritten_during_turns"] =
             serde_json::json!(signals.history_rewritten_during_turns);
-        report["post_compaction_sample"] = serde_json::json!(signals.post_compaction_sample);
+        // Per-segment hit rates make any compaction reset visible without
+        // letting it override the whole-run assessment.
+        let harness_segments: Vec<serde_json::Value> = scenario_segment_hit_rates(&rows, "harness")
+            .into_iter()
+            .map(|(segment, rate)| serde_json::json!({"segment": segment, "hit_rate": rate}))
+            .collect();
+        report["harness_segment_hit_rates"] = serde_json::json!(harness_segments);
         report["diagnosis"] = serde_json::json!(format!("{diagnosis:?}"));
         println!(
             "{}",
@@ -1027,6 +1195,8 @@ mod live {
             hit_tokens: hit,
             miss_tokens: miss,
             model_context_window: None,
+            post_compaction: false,
+            context_segment: 0,
         });
         tokio::time::sleep(config.warmup).await;
 
@@ -1044,6 +1214,8 @@ mod live {
                 hit_tokens: hit,
                 miss_tokens: miss,
                 model_context_window: None,
+                post_compaction: false,
+                context_segment: 0,
             });
         }
     }
