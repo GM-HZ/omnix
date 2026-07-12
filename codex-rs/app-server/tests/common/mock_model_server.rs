@@ -108,7 +108,8 @@ pub async fn create_mock_chat_completions_server_sequence(bodies: Vec<String>) -
 /// exact call counts.
 pub async fn create_mock_chat_completions_server_repeating_text(message: &str) -> MockServer {
     let server = responses::start_mock_server().await;
-    let body = chat_completions::cc_text_turn("cc-1", message, /*prompt*/ 10, /*completion*/ 4);
+    let body =
+        chat_completions::cc_text_turn("cc-1", message, /*prompt*/ 10, /*completion*/ 4);
     Mock::given(method("POST"))
         .and(path_regex(".*/chat/completions$"))
         .respond_with(

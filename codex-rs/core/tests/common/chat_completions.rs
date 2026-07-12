@@ -140,7 +140,13 @@ pub fn cc_reasoning(id: &str, text: &str) -> Value {
 
 /// Opening chunk for a tool call at `index`: id, name, and (optional) initial
 /// arguments.
-pub fn cc_tool_call_open(id: &str, index: u32, call_id: &str, name: &str, arguments: &str) -> Value {
+pub fn cc_tool_call_open(
+    id: &str,
+    index: u32,
+    call_id: &str,
+    name: &str,
+    arguments: &str,
+) -> Value {
     json!({
         "id": id,
         "choices": [{
