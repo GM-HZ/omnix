@@ -514,7 +514,7 @@ git diff --exit-code -- codex-rs/app-server-protocol codex-rs/protocol
 
 Expected: no schema/API changes.
 
-- [ ] **Step 4: Inspect exec JSON usage**
+- [x] **Step 4: Inspect exec JSON usage**
 
 Run one warmed DeepSeek-backed `codex exec --json` command using existing provider configuration.
 Confirm final usage exposes nonzero cached input without a new exec flag.

@@ -80,3 +80,18 @@ warranted for prompt caching.** Phase 2 optimization is not indicated by this
 data. Re-run after any change to the system prompt, tool set/order, or
 history-conversion path.
 
+## `codex exec --json` acceptance (Step 4)
+
+A `codex exec --json` run against the DeepSeek provider (`deepseek-v4-flash`,
+`wire_api = "chat_completions"`) exposes cached input through the standard
+token-accounting path — no new exec flag:
+
+```json
+{"type":"turn.completed","usage":{"input_tokens":7935,"cached_input_tokens":7808,"output_tokens":17,"reasoning_output_tokens":0}}
+```
+
+`cached_input_tokens` (7808) is nonzero and ≈ 98.4% of `input_tokens` (7935),
+reproducible across two consecutive runs. This confirms the T1 usage mapping
+reaches the CLI's public JSON output, not just the internal benchmark.
+
+
