@@ -5,6 +5,9 @@
 //! `next_event()` needs `&mut`), while this handle keeps a cloneable
 //! `InProcessAppServerRequestHandle` for issuing thread/turn requests.
 
+use std::sync::Arc;
+use std::sync::atomic::AtomicI64;
+
 use codex_app_server_client::InProcessAppServerClient;
 use codex_app_server_client::InProcessAppServerRequestHandle;
 use tokio::sync::mpsc;
@@ -14,8 +17,8 @@ use crate::dirs::RuntimePaths;
 use crate::dirs::prepare_runtime_dirs;
 use crate::error::RuntimeError;
 use crate::events::consumer::ConsumerCommand;
-use crate::events::consumer::ToolDispatch;
 use crate::events::consumer::spawn_consumer;
+use crate::events::tool_dispatch::ToolDispatch;
 use crate::session::Session;
 use crate::spec::RuntimeSpec;
 use crate::start_args::build_start_args;
@@ -36,17 +39,24 @@ pub enum RuntimeHealth {
 pub struct Capabilities {
     pub wire_api: &'static str,
     pub reasoning: bool,
+    /// Whether any tool surface is available.
     pub tools: bool,
+    /// Dynamic tools registered by the host application.
+    pub host_tools: bool,
+    /// Built-in command/file tools backed by initialized helper dispatch.
+    pub built_in_tools: bool,
     pub persistence: bool,
     pub compaction: bool,
 }
 
 impl Capabilities {
-    fn runtime_0_0() -> Self {
+    fn runtime_0_0(host_tools: bool, built_in_tools: bool) -> Self {
         Self {
             wire_api: "chat_completions",
             reasoning: true,
-            tools: true,
+            tools: host_tools || built_in_tools,
+            host_tools,
+            built_in_tools,
             persistence: true,
             compaction: true,
         }
@@ -64,6 +74,13 @@ pub struct Runtime {
     tool_descriptors: Vec<ToolDescriptor>,
     /// Defaults applied to every thread started by this runtime.
     session_defaults: SessionDefaults,
+    /// Global, connection-scoped JSON-RPC request-id counter. Must be shared
+    /// across all sessions because the in-process app-server correlates
+    /// request→response by ID on a single shared `pending_request_responses`
+    /// map per connection (§12 / review finding #3).
+    request_ids: Arc<AtomicI64>,
+    /// Retains helper aliases for the full runtime lifetime.
+    _process: Option<crate::process::EmbeddedProcess>,
 }
 
 /// Runtime-level defaults applied when starting a thread. These must be set on
@@ -91,7 +108,13 @@ impl Runtime {
         crate::manifest::reconcile_manifest(&paths.codex_home, &spec.model.model, scope_label)?;
 
         let translated = build_config(&spec, &paths).await?;
-        let start_args = build_start_args(translated.config, translated.cli_overrides).await?;
+        let start_args = build_start_args(
+            translated.config,
+            translated.cli_overrides,
+            &paths,
+            spec.process.as_ref(),
+        )
+        .await?;
         let client = InProcessAppServerClient::start(start_args)
             .await
             .map_err(|source| RuntimeError::Start { source })?;
@@ -141,6 +164,8 @@ impl Runtime {
             health: RuntimeHealth::Ready,
             tool_descriptors,
             session_defaults,
+            request_ids: Arc::new(AtomicI64::new(1)),
+            _process: spec.process,
         })
     }
 
@@ -151,7 +176,7 @@ impl Runtime {
 
     /// Statically-known runtime capabilities.
     pub fn capabilities(&self) -> Capabilities {
-        Capabilities::runtime_0_0()
+        Capabilities::runtime_0_0(!self.tool_descriptors.is_empty(), self._process.is_some())
     }
 
     /// Resolved on-disk paths (`.omnix` home and workspace).
@@ -169,6 +194,7 @@ impl Runtime {
             self.consumer_tx.clone(),
             self.tool_descriptors.clone(),
             self.session_defaults.clone(),
+            Arc::clone(&self.request_ids),
             config,
         )
         .await
@@ -181,6 +207,7 @@ impl Runtime {
             self.consumer_tx.clone(),
             self.tool_descriptors.clone(),
             self.session_defaults.clone(),
+            Arc::clone(&self.request_ids),
             session_id,
         )
         .await

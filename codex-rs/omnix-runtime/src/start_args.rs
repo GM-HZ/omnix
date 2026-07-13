@@ -12,16 +12,17 @@ use codex_app_server_client::EnvironmentManager;
 use codex_app_server_client::ExecServerRuntimePaths;
 use codex_app_server_client::InProcessClientStartArgs;
 use codex_app_server_client::StateDbHandle;
-use codex_arg0::Arg0DispatchPaths;
 use codex_config::CloudConfigBundleLoader;
-use codex_config::LoaderOverrides;
 use codex_config::TomlValue;
 use codex_core::config::Config;
 use codex_core::init_state_db;
 use codex_feedback::CodexFeedback;
 use codex_protocol::protocol::SessionSource;
 
+use crate::config_translate::isolated_loader_overrides;
+use crate::dirs::RuntimePaths;
 use crate::error::RuntimeError;
+use crate::process::EmbeddedProcess;
 
 /// Client identity reported to the app-server during initialize.
 const CLIENT_NAME: &str = "omnix-sdk";
@@ -35,31 +36,36 @@ const SESSION_SOURCE_TAG: &str = "omnix-sdk";
 pub async fn build_start_args(
     config: Arc<Config>,
     cli_overrides: Vec<(String, TomlValue)>,
+    paths: &RuntimePaths,
+    process: Option<&EmbeddedProcess>,
 ) -> Result<InProcessClientStartArgs, RuntimeError> {
     let state_db: Option<StateDbHandle> = init_state_db(config.as_ref()).await;
 
-    // The embedded runtime is compiled into the host binary; the current exe is
-    // the "codex self exe" the local execution environment re-invokes as a
-    // sandbox helper. Mirror what `codex exec` derives from its arg0 paths.
-    let codex_self_exe = std::env::current_exe().ok();
-    let runtime_paths = ExecServerRuntimePaths::from_optional_paths(codex_self_exe.clone(), None)
-        .map_err(|source| RuntimeError::Environment { source })?;
-
-    let environment_manager =
-        EnvironmentManager::from_codex_home(config.codex_home.clone(), Some(runtime_paths))
-            .await
-            .map_err(|err| RuntimeError::Environment {
-                source: std::io::Error::other(err.to_string()),
-            })?;
+    let arg0_paths = process
+        .map(EmbeddedProcess::paths)
+        .cloned()
+        .unwrap_or_default();
+    let environment_manager = match arg0_paths.codex_self_exe.clone() {
+        Some(codex_self_exe) => {
+            let runtime_paths = ExecServerRuntimePaths::from_optional_paths(
+                Some(codex_self_exe),
+                arg0_paths.codex_linux_sandbox_exe.clone(),
+            )
+            .map_err(|source| RuntimeError::Environment { source })?;
+            EnvironmentManager::from_codex_home(config.codex_home.clone(), Some(runtime_paths))
+                .await
+                .map_err(|err| RuntimeError::Environment {
+                    source: std::io::Error::other(err.to_string()),
+                })?
+        }
+        None => EnvironmentManager::without_environments(),
+    };
 
     Ok(InProcessClientStartArgs {
-        arg0_paths: Arg0DispatchPaths {
-            codex_self_exe,
-            ..Arg0DispatchPaths::default()
-        },
+        arg0_paths,
         config,
         cli_overrides,
-        loader_overrides: LoaderOverrides::default(),
+        loader_overrides: isolated_loader_overrides(paths),
         strict_config: false,
         cloud_config_bundle: CloudConfigBundleLoader::default(),
         feedback: CodexFeedback::new(),
@@ -77,3 +83,7 @@ pub async fn build_start_args(
         channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
     })
 }
+
+#[cfg(test)]
+#[path = "start_args_tests.rs"]
+mod tests;

@@ -5,9 +5,13 @@
 mod common;
 
 use common::test_spec;
+use core_test_support::chat_completions::cc_text_turn;
+use core_test_support::chat_completions::mount_chat_completions_sequence;
 use core_test_support::chat_completions::start_mock_chat_completions_server;
+use omnix_runtime::AgentEvent;
 use omnix_runtime::Runtime;
 use omnix_runtime::RuntimeHealth;
+use omnix_runtime::SessionConfig;
 
 #[tokio::test]
 async fn embedded_runtime_starts_without_config_toml() {
@@ -44,7 +48,40 @@ async fn embedded_runtime_starts_without_config_toml() {
 
     let caps = runtime.capabilities();
     assert_eq!(caps.wire_api, "chat_completions");
+    assert!(!caps.tools);
+    assert!(!caps.host_tools);
+    assert!(!caps.built_in_tools);
     assert!(caps.persistence);
 
     runtime.shutdown().await.expect("clean shutdown");
+}
+
+#[tokio::test]
+async fn runtime_and_thread_reload_ignore_ambient_omnix_config() {
+    let server = start_mock_chat_completions_server().await;
+    mount_chat_completions_sequence(&server, vec![cc_text_turn("cc-1", "isolated", 8, 2)]).await;
+    let home = tempfile::tempdir().expect("temp dir");
+    let dot_omnix = home.path().join(".omnix");
+    std::fs::create_dir(&dot_omnix).expect("create .omnix");
+    std::fs::write(dot_omnix.join("config.toml"), "this is not valid = [toml")
+        .expect("write hostile config");
+
+    let runtime = Runtime::start(test_spec(home.path().to_path_buf(), server.uri()))
+        .await
+        .expect("runtime ignores ambient config");
+    let mut session = runtime
+        .create_session(SessionConfig::default())
+        .await
+        .expect("thread/start reload ignores ambient config");
+    let mut run = session.run("ping").await.expect("run starts");
+    let mut completed = false;
+    while let Some(event) = run.next().await {
+        if matches!(event, AgentEvent::Completed(_)) {
+            completed = true;
+            break;
+        }
+    }
+    assert!(completed);
+
+    runtime.shutdown().await.expect("shutdown");
 }

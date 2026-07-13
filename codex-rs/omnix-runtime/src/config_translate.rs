@@ -11,6 +11,7 @@
 
 use std::sync::Arc;
 
+use codex_config::LoaderOverrides;
 use codex_config::TomlValue;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
@@ -52,6 +53,7 @@ pub async fn build_config(
         .codex_home(paths.codex_home.clone())
         .cli_overrides(cli_overrides.clone())
         .harness_overrides(overrides)
+        .loader_overrides(isolated_loader_overrides(paths))
         .build()
         .await
         .map_err(|source| RuntimeError::ConfigBuild { source })?;
@@ -65,6 +67,28 @@ pub async fn build_config(
         config: Arc::new(config),
         cli_overrides,
     })
+}
+
+/// Disable every ambient Codex configuration source for the embedded SDK.
+///
+/// The host-supplied [`RuntimeSpec`] is the only configuration contract. The
+/// paths below intentionally point at an internal directory that the runtime
+/// never creates, while the explicit ignore flags disable user/project layers.
+pub(crate) fn isolated_loader_overrides(paths: &RuntimePaths) -> LoaderOverrides {
+    let disabled = paths.codex_home.join("state").join("disabled-config");
+    LoaderOverrides {
+        user_config_path: None,
+        user_config_profile: None,
+        managed_config_path: Some(disabled.join("managed_config.toml")),
+        system_config_path: Some(disabled.join("config.toml")),
+        system_requirements_path: Some(disabled.join("requirements.toml")),
+        ignore_managed_requirements: true,
+        ignore_user_config: true,
+        ignore_user_and_project_exec_policy_rules: true,
+        #[cfg(target_os = "macos")]
+        managed_preferences_base64: Some(String::new()),
+        macos_managed_config_requirements_base64: Some(String::new()),
+    }
 }
 
 /// Build the dotted-path CLI overrides that register the Omnix provider.
@@ -105,3 +129,7 @@ fn provider_overrides(spec: &RuntimeSpec) -> Vec<(String, TomlValue)> {
 fn saturating_i64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
+
+#[cfg(test)]
+#[path = "config_translate_tests.rs"]
+mod tests;

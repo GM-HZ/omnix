@@ -22,7 +22,6 @@ pub const OMNIX_PROVIDER_ID: &str = "omnix-deepseek";
 
 /// Everything the runtime needs to start an in-process app-server, already
 /// validated by the SDK layer.
-#[derive(Clone)]
 pub struct RuntimeSpec {
     pub scope: RuntimeScope,
     pub model: ModelSpec,
@@ -38,6 +37,8 @@ pub struct RuntimeSpec {
     /// Optional tool invoker. When present, its descriptors are advertised on
     /// every thread and its `invoke` handles dynamic tool calls.
     pub tool_invoker: Option<Arc<dyn ToolInvoker>>,
+    /// Opt-in single-binary helper dispatch initialized by the host process.
+    pub process: Option<crate::process::EmbeddedProcess>,
 }
 
 /// Model + provider connection, including the in-memory bearer token.
@@ -55,7 +56,6 @@ pub struct ModelSpec {
 #[derive(Debug, Clone)]
 pub struct ContextSpec {
     pub model_context_tokens: u64,
-    pub effective_guardrail_tokens: u64,
     pub auto_compact_tokens: u64,
 }
 

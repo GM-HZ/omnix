@@ -24,7 +24,6 @@ pub fn test_spec(root: PathBuf, base_url: String) -> RuntimeSpec {
         },
         context: ContextSpec {
             model_context_tokens: 1_000_000,
-            effective_guardrail_tokens: 950_000,
             auto_compact_tokens: 850_000,
         },
         permissions: PermissionSpec {
@@ -35,5 +34,6 @@ pub fn test_spec(root: PathBuf, base_url: String) -> RuntimeSpec {
         base_instructions: None,
         developer_instructions: None,
         tool_invoker: None,
+        process: None,
     }
 }
