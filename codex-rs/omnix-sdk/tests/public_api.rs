@@ -13,7 +13,6 @@ use omnix_sdk::Omnix;
 use omnix_sdk::OmnixErrorKind;
 use omnix_sdk::RuntimeConfig;
 use omnix_sdk::RuntimeScope;
-use omnix_sdk::SessionConfig;
 
 #[tokio::test]
 async fn public_api_runs_a_text_turn() {
@@ -83,28 +82,4 @@ async fn explicit_developer_instructions_have_a_hard_size_limit() {
     };
 
     assert_eq!(error.kind(), OmnixErrorKind::InvalidConfig);
-}
-
-#[tokio::test]
-async fn per_session_instructions_have_the_same_hard_size_limit() {
-    let home = tempfile::tempdir().expect("temp dir");
-    let runtime = Omnix::builder()
-        .application_root(home.path())
-        .credentials(Credentials::from_api_key("test-key"))
-        .build()
-        .await
-        .expect("runtime starts");
-    let result = runtime
-        .sessions()
-        .create(SessionConfig {
-            instructions: Some("x".repeat(8 * 1024 + 1)),
-        })
-        .await;
-    let error = match result {
-        Ok(_) => panic!("oversized session instructions must be rejected"),
-        Err(error) => error,
-    };
-    assert_eq!(error.kind(), OmnixErrorKind::InvalidConfig);
-
-    runtime.shutdown().await.expect("shutdown");
 }

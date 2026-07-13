@@ -39,12 +39,10 @@ use crate::runtime::SessionDefaults;
 use crate::spec::OMNIX_PROVIDER_ID;
 use crate::tools::ToolDescriptor;
 
-/// Per-session creation options.
+/// Per-session creation options reserved for future additive settings.
 #[derive(Debug, Default, Clone)]
-pub struct SessionConfig {
-    /// Optional per-session developer instructions (layered atop the runtime's).
-    pub instructions: Option<String>,
-}
+#[non_exhaustive]
+pub struct SessionConfig {}
 
 /// A live agent session bound to one thread.
 pub struct Session {
@@ -80,7 +78,7 @@ impl Session {
         tool_descriptors: Vec<ToolDescriptor>,
         defaults: SessionDefaults,
         request_ids: Arc<AtomicI64>,
-        config: SessionConfig,
+        _config: SessionConfig,
     ) -> Result<Self, RuntimeError> {
         let dynamic_tools = dynamic_tool_specs(&tool_descriptors);
         let model = defaults.model.clone();
@@ -96,10 +94,7 @@ impl Session {
             // Chat Completions provider we injected into the Config.
             model_provider: Some(OMNIX_PROVIDER_ID.to_string()),
             base_instructions: defaults.base_instructions.clone(),
-            developer_instructions: config
-                .instructions
-                .clone()
-                .or_else(|| defaults.developer_instructions.clone()),
+            developer_instructions: defaults.developer_instructions.clone(),
             thread_source: Some(ThreadSource::User),
             dynamic_tools,
             ..ThreadStartParams::default()
@@ -147,8 +142,8 @@ impl Session {
             thread_id: thread_id.clone(),
             model: Some(defaults.model),
             model_provider: Some(OMNIX_PROVIDER_ID.to_string()),
-            base_instructions: None,
-            developer_instructions: None,
+            base_instructions: defaults.base_instructions,
+            developer_instructions: defaults.developer_instructions,
             ..ThreadResumeParams::default()
         };
         let response: ThreadResumeResponse = request_handle

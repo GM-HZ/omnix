@@ -21,7 +21,7 @@ use serde::Serialize;
 pub enum InstructionSource {
     /// Inline text supplied directly (or compile-time embedded via `include_str!`).
     Inline(String),
-    /// A file path resolved at load time, relative to the pack root or absolute.
+    /// A file path resolved at load time relative to the pack root.
     File(std::path::PathBuf),
 }
 

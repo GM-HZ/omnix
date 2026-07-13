@@ -172,21 +172,37 @@ impl Drop for Run {
         }
 
         let request_handle = self.control.request_handle.clone();
-        let request_id = next_request_id(&self.control.request_ids);
+        let request_ids = Arc::clone(&self.control.request_ids);
+        let active = Arc::clone(&self.control.active);
         let thread_id = self.control.thread_id.clone();
         let turn_id = self.turn_id.clone();
         match tokio::runtime::Handle::try_current() {
             Ok(handle) => {
                 handle.spawn(async move {
-                    let result: Result<codex_app_server_protocol::TurnInterruptResponse, _> =
-                        request_handle
+                    let mut last_error = None;
+                    for attempt in 0..5 {
+                        let result: Result<codex_app_server_protocol::TurnInterruptResponse, _> = request_handle
                             .request_typed(ClientRequest::TurnInterrupt {
-                                request_id,
-                                params: TurnInterruptParams { thread_id, turn_id },
+                                request_id: next_request_id(&request_ids),
+                                params: TurnInterruptParams {
+                                    thread_id: thread_id.clone(),
+                                    turn_id: turn_id.clone(),
+                                },
                             })
                             .await;
-                    if let Err(error) = result {
-                        tracing::warn!(target: "omnix::run", %error, "failed to interrupt dropped run");
+                        match result {
+                            Ok(_) => return,
+                            Err(error) => last_error = Some(error),
+                        }
+                        if !active.load(Ordering::Acquire) {
+                            return;
+                        }
+                        if attempt < 4 {
+                            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                        }
+                    }
+                    if let Some(error) = last_error {
+                        tracing::warn!(target: "omnix::run", %error, "failed to interrupt dropped run after retries");
                     }
                 });
             }
