@@ -9,35 +9,52 @@
 //! a terminal event or is dropped.
 
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use tokio::sync::mpsc;
 
+use codex_app_server_client::InProcessAppServerRequestHandle;
+use codex_app_server_protocol::ClientRequest;
+use codex_app_server_protocol::TurnInterruptParams;
+
 use crate::events::AgentEvent;
+use crate::events::consumer::ConsumerCommand;
+use crate::session::next_request_id;
 
 /// Streaming handle for one turn's events.
 pub struct Run {
     turn_id: String,
     event_rx: mpsc::Receiver<AgentEvent>,
     finished: bool,
-    active: Arc<AtomicBool>,
+    control: RunControl,
     started_at: Instant,
     first_token_logged: bool,
+}
+
+pub(crate) struct RunControl {
+    pub active: Arc<AtomicBool>,
+    pub active_turn_id: Arc<Mutex<Option<String>>>,
+    pub thread_id: String,
+    pub consumer_tx: mpsc::Sender<ConsumerCommand>,
+    pub request_handle: InProcessAppServerRequestHandle,
+    pub request_ids: Arc<AtomicI64>,
 }
 
 impl Run {
     pub(crate) fn new(
         turn_id: String,
         event_rx: mpsc::Receiver<AgentEvent>,
-        active: Arc<AtomicBool>,
+        control: RunControl,
     ) -> Self {
         Self {
             turn_id,
             event_rx,
             finished: false,
-            active,
+            control,
             started_at: Instant::now(),
             first_token_logged: false,
         }
@@ -119,14 +136,63 @@ impl Run {
 
     fn mark_finished(&mut self) {
         self.finished = true;
-        self.active.store(false, Ordering::Release);
+        *self
+            .control
+            .active_turn_id
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        self.control.active.store(false, Ordering::Release);
     }
 }
 
 impl Drop for Run {
     fn drop(&mut self) {
-        // Releasing the active guard on drop lets the session start a new run
-        // even if the caller abandoned this one before it completed.
-        self.active.store(false, Ordering::Release);
+        if self.finished || !self.control.active.load(Ordering::Acquire) {
+            return;
+        }
+
+        if self
+            .control
+            .consumer_tx
+            .try_send(ConsumerCommand::AbandonRun {
+                thread_id: self.control.thread_id.clone(),
+                turn_id: self.turn_id.clone(),
+                active: Arc::clone(&self.control.active),
+                active_turn_id: Arc::clone(&self.control.active_turn_id),
+            })
+            .is_err()
+        {
+            *self
+                .control
+                .active_turn_id
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            self.control.active.store(false, Ordering::Release);
+            return;
+        }
+
+        let request_handle = self.control.request_handle.clone();
+        let request_id = next_request_id(&self.control.request_ids);
+        let thread_id = self.control.thread_id.clone();
+        let turn_id = self.turn_id.clone();
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(async move {
+                    let result: Result<codex_app_server_protocol::TurnInterruptResponse, _> =
+                        request_handle
+                            .request_typed(ClientRequest::TurnInterrupt {
+                                request_id,
+                                params: TurnInterruptParams { thread_id, turn_id },
+                            })
+                            .await;
+                    if let Err(error) = result {
+                        tracing::warn!(target: "omnix::run", %error, "failed to interrupt dropped run");
+                    }
+                });
+            }
+            Err(_) => {
+                tracing::warn!(target: "omnix::run", "no async runtime available to interrupt dropped run");
+            }
+        }
     }
 }

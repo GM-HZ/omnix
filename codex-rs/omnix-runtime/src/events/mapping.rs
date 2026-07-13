@@ -1,11 +1,10 @@
 //! Translate app-server `ServerNotification`s into stable [`AgentEvent`]s.
 //!
-//! Routing is scoped by `thread_id`, which is known at session-create time —
-//! before any turn starts — so a run can register its event sink before issuing
-//! `turn/start` and never miss the `TurnStarted` or early delta notifications.
-//! Phase 2 permits one active run per session (per thread), so a thread-scoped
-//! match is unambiguous. The design doc's `AgentEvent` list is honored, with one
-//! correction: there is no dedicated "turn failed" notification, so failure is
+//! Routing is scoped by both `thread_id` and `turn_id`. A run registers a
+//! pending sink before `turn/start`; the consumer binds it when `TurnStarted`
+//! arrives and the session confirms the same id from the response. The design
+//! doc's `AgentEvent` list is honored, with one correction: there is no
+//! dedicated "turn failed" notification, so failure is
 //! derived from `Error` and from `TurnCompleted` with a non-completed status
 //! (see [`map_turn_completed`]).
 
@@ -24,47 +23,87 @@ use crate::events::Usage;
 ///
 /// Returns `None` for notifications that belong to another thread or that the
 /// stable API does not surface.
-pub fn map_notification(notification: &ServerNotification, thread_id: &str) -> Option<AgentEvent> {
+pub fn map_notification(
+    notification: &ServerNotification,
+    thread_id: &str,
+    turn_id: &str,
+) -> Option<AgentEvent> {
     match notification {
-        ServerNotification::TurnStarted(n) if n.thread_id == thread_id => {
+        ServerNotification::TurnStarted(n) if n.thread_id == thread_id && n.turn.id == turn_id => {
             Some(AgentEvent::Started {
                 turn_id: n.turn.id.clone(),
             })
         }
-        ServerNotification::AgentMessageDelta(n) if n.thread_id == thread_id => {
+        ServerNotification::AgentMessageDelta(n)
+            if n.thread_id == thread_id && n.turn_id == turn_id =>
+        {
             Some(AgentEvent::MessageDelta {
                 item_id: n.item_id.clone(),
                 delta: n.delta.clone(),
             })
         }
-        ServerNotification::ReasoningTextDelta(n) if n.thread_id == thread_id => {
+        ServerNotification::ReasoningTextDelta(n)
+            if n.thread_id == thread_id && n.turn_id == turn_id =>
+        {
             Some(AgentEvent::ReasoningDelta {
                 item_id: n.item_id.clone(),
                 delta: n.delta.clone(),
             })
         }
-        ServerNotification::ReasoningSummaryTextDelta(n) if n.thread_id == thread_id => {
+        ServerNotification::ReasoningSummaryTextDelta(n)
+            if n.thread_id == thread_id && n.turn_id == turn_id =>
+        {
             Some(AgentEvent::ReasoningDelta {
                 item_id: n.item_id.clone(),
                 delta: n.delta.clone(),
             })
         }
-        ServerNotification::ItemCompleted(n) if n.thread_id == thread_id => {
+        ServerNotification::ItemCompleted(n)
+            if n.thread_id == thread_id && n.turn_id == turn_id =>
+        {
             map_completed_item(&n.item)
         }
-        ServerNotification::ItemStarted(n) if n.thread_id == thread_id => map_started_item(&n.item),
-        ServerNotification::ThreadTokenUsageUpdated(n) if n.thread_id == thread_id => {
+        ServerNotification::ItemStarted(n) if n.thread_id == thread_id && n.turn_id == turn_id => {
+            map_started_item(&n.item)
+        }
+        ServerNotification::ThreadTokenUsageUpdated(n)
+            if n.thread_id == thread_id && n.turn_id == turn_id =>
+        {
             Some(AgentEvent::Usage(map_usage(&n.token_usage.last)))
         }
-        ServerNotification::TurnCompleted(n) if n.thread_id == thread_id => Some(
-            map_turn_completed(&n.turn.status, &n.turn.id, n.turn.error.as_ref()),
-        ),
-        ServerNotification::Error(n) if n.thread_id == thread_id && !n.will_retry => {
+        ServerNotification::TurnCompleted(n)
+            if n.thread_id == thread_id && n.turn.id == turn_id =>
+        {
+            Some(map_turn_completed(
+                &n.turn.status,
+                &n.turn.id,
+                n.turn.error.as_ref(),
+            ))
+        }
+        ServerNotification::Error(n)
+            if n.thread_id == thread_id && n.turn_id == turn_id && !n.will_retry =>
+        {
             Some(AgentEvent::Failed(AgentFailure {
                 message: n.error.message.clone(),
                 turn_id: Some(n.turn_id.clone()),
             }))
         }
+        _ => None,
+    }
+}
+
+/// Return the thread/turn identity for notifications surfaced by this adapter.
+pub fn notification_scope(notification: &ServerNotification) -> Option<(&str, &str)> {
+    match notification {
+        ServerNotification::TurnStarted(n) => Some((&n.thread_id, &n.turn.id)),
+        ServerNotification::AgentMessageDelta(n) => Some((&n.thread_id, &n.turn_id)),
+        ServerNotification::ReasoningTextDelta(n) => Some((&n.thread_id, &n.turn_id)),
+        ServerNotification::ReasoningSummaryTextDelta(n) => Some((&n.thread_id, &n.turn_id)),
+        ServerNotification::ItemCompleted(n) => Some((&n.thread_id, &n.turn_id)),
+        ServerNotification::ItemStarted(n) => Some((&n.thread_id, &n.turn_id)),
+        ServerNotification::ThreadTokenUsageUpdated(n) => Some((&n.thread_id, &n.turn_id)),
+        ServerNotification::TurnCompleted(n) => Some((&n.thread_id, &n.turn.id)),
+        ServerNotification::Error(n) => Some((&n.thread_id, &n.turn_id)),
         _ => None,
     }
 }
@@ -203,6 +242,10 @@ mod tests {
             .unwrap_or_else(|e| panic!("failed to build {method}: {e}"))
     }
 
+    fn map(notification: &ServerNotification, thread_id: &str) -> Option<AgentEvent> {
+        map_notification(notification, thread_id, TURN)
+    }
+
     #[test]
     fn turn_started_maps_to_started() {
         let n = notification(
@@ -213,13 +256,13 @@ mod tests {
             }),
         );
         assert_eq!(
-            map_notification(&n, THREAD),
+            map(&n, THREAD),
             Some(AgentEvent::Started {
                 turn_id: TURN.to_string()
             })
         );
         // A different thread must not match.
-        assert_eq!(map_notification(&n, "other"), None);
+        assert_eq!(map(&n, "other"), None);
     }
 
     #[test]
@@ -229,7 +272,7 @@ mod tests {
             json!({"threadId": THREAD, "turnId": TURN, "itemId": "i1", "delta": "hi"}),
         );
         assert_eq!(
-            map_notification(&n, THREAD),
+            map(&n, THREAD),
             Some(AgentEvent::MessageDelta {
                 item_id: "i1".to_string(),
                 delta: "hi".to_string()
@@ -247,7 +290,7 @@ mod tests {
             }),
         );
         assert_eq!(
-            map_notification(&n, THREAD),
+            map(&n, THREAD),
             Some(AgentEvent::MessageCompleted {
                 item_id: "i2".to_string(),
                 text: "done".to_string()
@@ -265,7 +308,7 @@ mod tests {
             }),
         );
         assert_eq!(
-            map_notification(&n, THREAD),
+            map(&n, THREAD),
             Some(AgentEvent::Completed(RunResult {
                 turn_id: TURN.to_string(),
                 status: RunStatus::Completed
@@ -288,7 +331,7 @@ mod tests {
             }),
         );
         assert_eq!(
-            map_notification(&n, THREAD),
+            map(&n, THREAD),
             Some(AgentEvent::Failed(AgentFailure {
                 message: "boom".to_string(),
                 turn_id: Some(TURN.to_string())
@@ -306,7 +349,7 @@ mod tests {
             }),
         );
         assert_eq!(
-            map_notification(&n, THREAD),
+            map(&n, THREAD),
             Some(AgentEvent::Failed(AgentFailure {
                 message: "network down".to_string(),
                 turn_id: Some(TURN.to_string())
@@ -323,7 +366,7 @@ mod tests {
                 "error": { "message": "transient", "codexErrorInfo": null }
             }),
         );
-        assert_eq!(map_notification(&n, THREAD), None);
+        assert_eq!(map(&n, THREAD), None);
     }
 
     #[test]
@@ -335,9 +378,6 @@ mod tests {
                 "item": { "type": "contextCompaction", "id": "c1" },
             }),
         );
-        assert_eq!(
-            map_notification(&n, THREAD),
-            Some(AgentEvent::CompactCompleted)
-        );
+        assert_eq!(map(&n, THREAD), Some(AgentEvent::CompactCompleted));
     }
 }

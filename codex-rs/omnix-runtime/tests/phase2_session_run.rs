@@ -88,6 +88,7 @@ async fn session_run_streams_ordered_events_then_resumes() {
         .await
         .expect("session resumes");
     assert_eq!(resumed.id(), session_id);
+    assert_eq!(resumed.metadata().model, "mock-model");
 
     let mut run2 = resumed.run("again").await.expect("second run starts");
     let (events2, text2) = drain_run(&mut run2).await;

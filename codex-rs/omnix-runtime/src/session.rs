@@ -5,6 +5,7 @@
 //! its event sink with the consumer before issuing `turn/start`.
 
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
@@ -26,12 +27,14 @@ use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::UserInput;
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 
 use crate::error::RuntimeError;
 use crate::events::AgentEvent;
 use crate::events::consumer::ConsumerCommand;
 use crate::events::consumer::RunSink;
 use crate::run::Run;
+use crate::run::RunControl;
 use crate::runtime::SessionDefaults;
 use crate::spec::OMNIX_PROVIDER_ID;
 use crate::tools::ToolDescriptor;
@@ -41,8 +44,6 @@ use crate::tools::ToolDescriptor;
 pub struct SessionConfig {
     /// Optional per-session developer instructions (layered atop the runtime's).
     pub instructions: Option<String>,
-    /// Model slug override for this session; falls back to the runtime default.
-    pub model: Option<String>,
 }
 
 /// A live agent session bound to one thread.
@@ -52,7 +53,7 @@ pub struct Session {
     thread_id: String,
     model: String,
     request_ids: Arc<AtomicI64>,
-    active_turn_id: Option<String>,
+    active_turn_id: Arc<Mutex<Option<String>>>,
     /// True while a run is in flight. Enforces one active run per session (§12).
     active_run: Arc<AtomicBool>,
 }
@@ -68,19 +69,21 @@ pub struct SessionMetadata {
 
 impl Session {
     /// Create a new session (starts a thread).
+    ///
+    /// `request_ids` is the global, connection-scoped JSON-RPC request-id
+    /// counter shared across all sessions. The in-process app-server
+    /// correlates request→response by ID on a single connection-wide map,
+    /// so per-session counters would collide (review finding #3).
     pub(crate) async fn create(
         request_handle: InProcessAppServerRequestHandle,
         consumer_tx: mpsc::Sender<ConsumerCommand>,
         tool_descriptors: Vec<ToolDescriptor>,
         defaults: SessionDefaults,
+        request_ids: Arc<AtomicI64>,
         config: SessionConfig,
     ) -> Result<Self, RuntimeError> {
-        let request_ids = Arc::new(AtomicI64::new(1));
         let dynamic_tools = dynamic_tool_specs(&tool_descriptors);
-        let model = config
-            .model
-            .clone()
-            .unwrap_or_else(|| defaults.model.clone());
+        let model = defaults.model.clone();
         // Per-session overrides fall back to the runtime defaults. Model and
         // instructions MUST be set on the thread params: the app-server
         // re-resolves config on thread/start and does not carry our harness
@@ -122,7 +125,7 @@ impl Session {
             thread_id: response.thread.id,
             model,
             request_ids,
-            active_turn_id: None,
+            active_turn_id: Arc::new(Mutex::new(None)),
             active_run: Arc::new(AtomicBool::new(false)),
         })
     }
@@ -137,15 +140,15 @@ impl Session {
         consumer_tx: mpsc::Sender<ConsumerCommand>,
         _tool_descriptors: Vec<ToolDescriptor>,
         defaults: SessionDefaults,
+        request_ids: Arc<AtomicI64>,
         thread_id: String,
     ) -> Result<Self, RuntimeError> {
-        let request_ids = Arc::new(AtomicI64::new(1));
         let params = ThreadResumeParams {
             thread_id: thread_id.clone(),
-            model: Some(defaults.model.clone()),
+            model: Some(defaults.model),
             model_provider: Some(OMNIX_PROVIDER_ID.to_string()),
-            base_instructions: defaults.base_instructions.clone(),
-            developer_instructions: defaults.developer_instructions.clone(),
+            base_instructions: None,
+            developer_instructions: None,
             ..ThreadResumeParams::default()
         };
         let response: ThreadResumeResponse = request_handle
@@ -165,9 +168,9 @@ impl Session {
             request_handle,
             consumer_tx,
             thread_id: response.thread.id,
-            model: defaults.model.clone(),
+            model: response.model,
             request_ids,
-            active_turn_id: None,
+            active_turn_id: Arc::new(Mutex::new(None)),
             active_run: Arc::new(AtomicBool::new(false)),
         })
     }
@@ -200,15 +203,25 @@ impl Session {
         }
 
         let (event_tx, event_rx) = mpsc::channel::<AgentEvent>(256);
+        let (registered_tx, registered_rx) = oneshot::channel();
         if self
             .consumer_tx
-            .send(ConsumerCommand::RegisterRun(RunSink {
-                thread_id: self.thread_id.clone(),
-                sender: event_tx,
-            }))
+            .send(ConsumerCommand::RegisterRun {
+                sink: RunSink {
+                    thread_id: self.thread_id.clone(),
+                    sender: event_tx,
+                    active: Arc::clone(&self.active_run),
+                    active_turn_id: Arc::clone(&self.active_turn_id),
+                },
+                registered: registered_tx,
+            })
             .await
             .is_err()
         {
+            self.active_run.store(false, Ordering::Release);
+            return Err(RuntimeError::Unavailable);
+        }
+        if registered_rx.await.is_err() {
             self.active_run.store(false, Ordering::Release);
             return Err(RuntimeError::Unavailable);
         }
@@ -231,13 +244,35 @@ impl Session {
         {
             Ok(response) => response,
             Err(err) => {
-                // Release the slot so a retry is possible.
+                let (unregistered_tx, unregistered_rx) = oneshot::channel();
+                let _ = self
+                    .consumer_tx
+                    .send(ConsumerCommand::UnregisterRun {
+                        thread_id: self.thread_id.clone(),
+                        unregistered: Some(unregistered_tx),
+                    })
+                    .await;
+                let _ = unregistered_rx.await;
                 self.active_run.store(false, Ordering::Release);
                 return Err(err.into());
             }
         };
 
-        self.active_turn_id = Some(response.turn.id.clone());
+        let (bound_tx, bound_rx) = oneshot::channel();
+        self.consumer_tx
+            .send(ConsumerCommand::BindRun {
+                thread_id: self.thread_id.clone(),
+                turn_id: response.turn.id.clone(),
+                bound: bound_tx,
+            })
+            .await
+            .map_err(|_| RuntimeError::Unavailable)?;
+        bound_rx.await.map_err(|_| RuntimeError::Unavailable)?;
+
+        *self
+            .active_turn_id
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(response.turn.id.clone());
         tracing::debug!(
             target: "omnix::run",
             session_id = %self.thread_id,
@@ -247,13 +282,25 @@ impl Session {
         Ok(Run::new(
             response.turn.id,
             event_rx,
-            Arc::clone(&self.active_run),
+            RunControl {
+                active: Arc::clone(&self.active_run),
+                active_turn_id: Arc::clone(&self.active_turn_id),
+                thread_id: self.thread_id.clone(),
+                consumer_tx: self.consumer_tx.clone(),
+                request_handle: self.request_handle.clone(),
+                request_ids: Arc::clone(&self.request_ids),
+            },
         ))
     }
 
     /// Interrupt the active run, if any.
     pub async fn interrupt(&self) -> Result<(), RuntimeError> {
-        let Some(turn_id) = self.active_turn_id.clone() else {
+        let Some(turn_id) = self
+            .active_turn_id
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        else {
             return Ok(());
         };
         let _: codex_app_server_protocol::TurnInterruptResponse = self
@@ -299,7 +346,7 @@ impl Session {
 }
 
 /// Allocate the next monotonically-increasing JSON-RPC request id.
-fn next_request_id(counter: &AtomicI64) -> RequestId {
+pub(crate) fn next_request_id(counter: &AtomicI64) -> RequestId {
     RequestId::Integer(counter.fetch_add(1, Ordering::Relaxed))
 }
 

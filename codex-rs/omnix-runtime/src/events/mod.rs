@@ -6,6 +6,7 @@
 
 pub(crate) mod consumer;
 pub(crate) mod mapping;
+pub(crate) mod tool_dispatch;
 
 /// Streamed lifecycle events for a single run (one turn).
 #[derive(Debug, Clone, PartialEq)]
@@ -41,10 +42,10 @@ pub enum AgentEvent {
     Usage(Usage),
     /// Automatic (or requested) context compaction completed.
     CompactCompleted,
-    /// The agent is waiting for approval of a privileged action. In SDK 0.0 the
-    /// runtime auto-decides per the configured policy; this event is emitted for
-    /// host observability.
-    WaitingForApproval(ApprovalRequest),
+    /// The runtime observed and auto-decided a privileged-action approval.
+    /// Runtime 0.0 is non-interactive, so this is an audit event rather than a
+    /// request that the host can answer.
+    ApprovalDecided(ApprovalRequest),
     /// The turn finished (successfully or interrupted).
     Completed(RunResult),
     /// The turn failed.
@@ -89,7 +90,7 @@ pub struct AgentFailure {
     pub turn_id: Option<String>,
 }
 
-/// What kind of privileged action is awaiting approval.
+/// What kind of privileged action was auto-decided.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApprovalKind {
     /// A shell/command execution.
@@ -100,7 +101,7 @@ pub enum ApprovalKind {
     Permissions,
 }
 
-/// Details of an approval request surfaced to the host.
+/// Details of an approval request and the decision already applied by Omnix.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalRequest {
     pub kind: ApprovalKind,
