@@ -10,7 +10,9 @@ use crate::config::RuntimeScope;
 use crate::error::OmnixError;
 use crate::error::OmnixErrorKind;
 use crate::error_map::map_runtime_error;
+use crate::instruction::validate_instruction;
 use crate::pack::BusinessPack;
+use crate::process::EmbeddedProcess;
 use crate::runtime::OmnixRuntime;
 use crate::tools::ToolRegistry;
 
@@ -29,6 +31,7 @@ pub struct OmnixBuilder {
     tools: Option<ToolRegistry>,
     business_pack: Option<BusinessPack>,
     pack_root: Option<PathBuf>,
+    process: Option<EmbeddedProcess>,
 }
 
 impl OmnixBuilder {
@@ -80,10 +83,9 @@ impl OmnixBuilder {
         self
     }
 
-    /// Attach a Business Pack. Its instructions are resolved and become the
-    /// runtime's `base_instructions` (unless `base_instructions` is set
-    /// explicitly, which then takes precedence). File-backed instruction
-    /// fragments resolve relative to [`OmnixBuilder::pack_root`] when set.
+    /// Attach a Business Pack. Its bounded instructions are added to the
+    /// runtime's developer instructions, preserving the built-in agent/tool
+    /// harness. An explicit [`OmnixBuilder::developer_instructions`] value wins.
     pub fn business_pack(mut self, pack: BusinessPack) -> Self {
         self.business_pack = Some(pack);
         self
@@ -92,6 +94,14 @@ impl OmnixBuilder {
     /// Root directory for resolving a pack's file-backed assets.
     pub fn pack_root(mut self, root: impl Into<PathBuf>) -> Self {
         self.pack_root = Some(root.into());
+        self
+    }
+
+    /// Enable Codex helper dispatch for a single-binary host. Obtain this value
+    /// by calling [`crate::Omnix::initialize_embedded_process`] at the very
+    /// beginning of `main`, before starting async runtimes or threads.
+    pub fn embedded_process(mut self, process: EmbeddedProcess) -> Self {
+        self.process = Some(process);
         self
     }
 
@@ -129,13 +139,18 @@ impl OmnixBuilder {
 
         config.validate()?;
 
-        // Resolve base instructions: an explicit builder value wins; otherwise
-        // fold in the Business Pack's composed instructions.
-        let base_instructions = match self.base_instructions {
+        // `base_instructions` replaces the model's built-in agent/tool-use
+        // harness ENTIRELY — only set it when the host explicitly asks for a
+        // full replacement. Business Pack instructions go into
+        // `developer_instructions` (the additive, safe layer that preserves the
+        // harness). An explicit builder value always wins.
+        let base_instructions = self.base_instructions;
+
+        let developer_instructions = match self.developer_instructions {
             Some(explicit) => Some(explicit),
             None => match &self.business_pack {
                 Some(pack) => pack
-                    .resolve_base_instructions(self.pack_root.as_deref())
+                    .resolve_developer_instructions(self.pack_root.as_deref())
                     .map_err(|e| {
                         OmnixError::new(OmnixErrorKind::InvalidConfig, e.to_string()).with_source(e)
                     })?,
@@ -143,13 +158,21 @@ impl OmnixBuilder {
             },
         };
 
+        if let Some(instructions) = base_instructions.as_deref() {
+            validate_instruction("base instructions", instructions)?;
+        }
+        if let Some(instructions) = developer_instructions.as_deref() {
+            validate_instruction("developer instructions", instructions)?;
+        }
+
         let tool_invoker = self.tools.and_then(ToolRegistry::into_invoker);
 
         let spec = config.into_spec(
             &credentials,
             base_instructions,
-            self.developer_instructions,
+            developer_instructions,
             tool_invoker,
+            self.process.map(EmbeddedProcess::into_runtime),
         );
 
         let runtime = Runtime::start(spec).await.map_err(map_runtime_error)?;
@@ -165,9 +188,5 @@ fn default_config_with_scope(scope: RuntimeScope) -> RuntimeConfig {
         context: Default::default(),
         permissions: Default::default(),
         tools: Default::default(),
-        skills: Default::default(),
-        plugins: Default::default(),
-        persistence: Default::default(),
-        observability: Default::default(),
     }
 }

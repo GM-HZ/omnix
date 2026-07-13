@@ -13,7 +13,6 @@ doctest = false
 workspace = true
 
 [dependencies]
-codex-app-server = { workspace = true }
 codex-app-server-client = { workspace = true }
 codex-app-server-protocol = { workspace = true }
 codex-arg0 = { workspace = true }
@@ -26,12 +25,10 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time", "rt", "macros"] }
-tokio-util = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
 core_test_support = { workspace = true }
-pretty_assertions = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 wiremock = { workspace = true }

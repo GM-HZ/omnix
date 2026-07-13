@@ -28,6 +28,8 @@ pub struct Capabilities {
     pub wire_api: &'static str,
     pub reasoning: bool,
     pub tools: bool,
+    pub host_tools: bool,
+    pub built_in_tools: bool,
     pub persistence: bool,
     pub compaction: bool,
 }
@@ -38,6 +40,8 @@ impl From<omnix_runtime::Capabilities> for Capabilities {
             wire_api: value.wire_api,
             reasoning: value.reasoning,
             tools: value.tools,
+            host_tools: value.host_tools,
+            built_in_tools: value.built_in_tools,
             persistence: value.persistence,
             compaction: value.compaction,
         }

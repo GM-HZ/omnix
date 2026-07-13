@@ -11,6 +11,7 @@ pub use omnix_runtime::SessionMetadata;
 
 use crate::error::OmnixError;
 use crate::error_map::map_runtime_error;
+use crate::instruction::validate_instruction;
 use crate::run::AgentRun;
 
 /// Per-session creation options.
@@ -18,16 +19,16 @@ use crate::run::AgentRun;
 pub struct SessionConfig {
     /// Optional per-session developer instructions.
     pub instructions: Option<String>,
-    /// Optional model override for this session.
-    pub model: Option<String>,
 }
 
 impl SessionConfig {
-    fn into_runtime(self) -> RuntimeSessionConfig {
-        RuntimeSessionConfig {
-            instructions: self.instructions,
-            model: self.model,
+    fn try_into_runtime(self) -> Result<RuntimeSessionConfig, OmnixError> {
+        if let Some(instructions) = self.instructions.as_deref() {
+            validate_instruction("session instructions", instructions)?;
         }
+        Ok(RuntimeSessionConfig {
+            instructions: self.instructions,
+        })
     }
 }
 
@@ -43,9 +44,10 @@ impl<'a> Sessions<'a> {
 
     /// Create a new session (a new thread).
     pub async fn create(&self, config: SessionConfig) -> Result<SessionHandle, OmnixError> {
+        let config = config.try_into_runtime()?;
         let session = self
             .runtime
-            .create_session(config.into_runtime())
+            .create_session(config)
             .await
             .map_err(map_runtime_error)?;
         Ok(SessionHandle::new(session))

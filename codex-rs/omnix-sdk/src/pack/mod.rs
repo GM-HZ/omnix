@@ -4,9 +4,9 @@
 //! A pack bundles the methodology/system prompt and knowledge assets a specific
 //! application needs, keeping them OUT of the business-neutral Omnix runtime. In
 //! SDK 0.0 the primary, fully-wired capability is instruction composition:
-//! pack instructions are folded into the runtime's `base_instructions`. Skill
-//! and plugin sources are represented but not yet materialized (they are
-//! reserved for a later phase).
+//! pack instructions are folded into the runtime's additive developer
+//! instructions. Skill and plugin loading are intentionally outside the 0.0
+//! public contract until they have an executable runtime implementation.
 
 mod loader;
 
@@ -25,20 +25,6 @@ pub enum InstructionSource {
     File(std::path::PathBuf),
 }
 
-/// A skill asset reference (reserved for a later phase).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SkillSource {
-    pub name: String,
-    pub path: std::path::PathBuf,
-}
-
-/// A plugin reference (reserved for a later phase).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PluginSource {
-    pub id: String,
-    pub path: std::path::PathBuf,
-}
-
 /// A composed business pack.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BusinessPack {
@@ -46,10 +32,6 @@ pub struct BusinessPack {
     pub version: String,
     #[serde(default)]
     pub instructions: Vec<InstructionSource>,
-    #[serde(default)]
-    pub skills: Vec<SkillSource>,
-    #[serde(default)]
-    pub plugins: Vec<PluginSource>,
     #[serde(default)]
     pub metadata: serde_json::Value,
 }
@@ -61,8 +43,6 @@ impl BusinessPack {
             id: id.into(),
             version: version.into(),
             instructions: Vec::new(),
-            skills: Vec::new(),
-            plugins: Vec::new(),
             metadata: serde_json::Value::Null,
         }
     }
@@ -81,11 +61,13 @@ impl BusinessPack {
     }
 
     /// Resolve and concatenate all instruction fragments into a single
-    /// `base_instructions` string, in order, separated by blank lines.
+    /// additive developer-instructions string, in order, separated by blank
+    /// lines.
     ///
-    /// `File` sources are read relative to `root` (or used as-is if absolute).
+    /// `File` sources are read relative to the required `root`; absolute paths
+    /// and paths that escape the root are rejected.
     /// Returns `None` when the pack contributes no instructions.
-    pub fn resolve_base_instructions(
+    pub fn resolve_developer_instructions(
         &self,
         root: Option<&std::path::Path>,
     ) -> Result<Option<String>, PackError> {

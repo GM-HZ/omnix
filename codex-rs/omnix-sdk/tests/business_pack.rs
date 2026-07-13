@@ -1,5 +1,5 @@
-//! Phase 4 exit test: a Business Pack's composed instructions become the
-//! runtime's base instructions and reach the outgoing Chat Completions request.
+//! A Business Pack's bounded instructions preserve the base harness and reach
+//! the outgoing Chat Completions request as additive policy.
 
 use core_test_support::chat_completions::cc_text_turn;
 use core_test_support::chat_completions::mount_chat_completions_sequence;
@@ -23,10 +23,6 @@ async fn business_pack_instructions_reach_the_request() {
         context: Default::default(),
         permissions: Default::default(),
         tools: Default::default(),
-        skills: Default::default(),
-        plugins: Default::default(),
-        persistence: Default::default(),
-        observability: Default::default(),
     };
     config.model.base_url = server.uri();
     config.model.model = "mock-model".to_string();
@@ -60,7 +56,7 @@ async fn business_pack_instructions_reach_the_request() {
     let body = String::from_utf8_lossy(&chat.body);
     assert!(
         body.contains(MARKER),
-        "pack instructions must reach the request as base instructions; body: {body}"
+        "pack instructions must reach the request as additive instructions; body: {body}"
     );
 
     runtime.shutdown().await.expect("shutdown");

@@ -200,7 +200,6 @@ codex-ollama = { path = "ollama" }
 codex-otel = { path = "otel" }
 codex-plugin = { path = "plugin" }
 codex-model-provider = { path = "model-provider" }
-omnix-sdk = { path = "omnix-sdk" }
 omnix-runtime = { path = "omnix-runtime" }
 codex-process-hardening = { path = "process-hardening" }
 codex-protocol = { path = "protocol" }

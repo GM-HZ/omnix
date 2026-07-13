@@ -12,7 +12,7 @@
 //! [`AgentEvent::ReasoningCompleted`] (mirroring the message delta/completed
 //! split), and tool events carry `call_id`/`tool`/`arguments` inline rather than
 //! an opaque payload struct. The event set is otherwise a superset of the sketch
-//! and adds [`AgentEvent::WaitingForApproval`]. This is an intentional
+//! and adds [`AgentEvent::ApprovalDecided`]. This is an intentional
 //! refinement, not a gap.
 
 pub use omnix_runtime::AgentFailure;
@@ -59,9 +59,9 @@ pub enum AgentEvent {
     Usage(Usage),
     /// Automatic (or requested) context compaction completed.
     CompactCompleted,
-    /// The agent is waiting for approval of a privileged action. In SDK 0.0 the
-    /// runtime auto-decides (non-interactive); this is emitted for observability.
-    WaitingForApproval(ApprovalRequest),
+    /// The runtime observed and auto-decided a privileged-action approval.
+    /// This is an audit event; the host cannot answer it after receipt.
+    ApprovalDecided(ApprovalRequest),
     /// The run finished (completed or interrupted).
     Completed(RunResult),
     /// The run failed.
@@ -119,7 +119,7 @@ impl From<RuntimeEvent> for AgentEvent {
             },
             RuntimeEvent::Usage(usage) => AgentEvent::Usage(usage),
             RuntimeEvent::CompactCompleted => AgentEvent::CompactCompleted,
-            RuntimeEvent::WaitingForApproval(request) => AgentEvent::WaitingForApproval(request),
+            RuntimeEvent::ApprovalDecided(request) => AgentEvent::ApprovalDecided(request),
             RuntimeEvent::Completed(result) => AgentEvent::Completed(result),
             RuntimeEvent::Failed(failure) => AgentEvent::Failed(failure),
         }

@@ -19,12 +19,8 @@ pub use model::ModelConfig;
 pub use model::WireApi;
 pub use subconfigs::ApprovalPolicy;
 pub use subconfigs::ContextConfig;
-pub use subconfigs::ObservabilityConfig;
 pub use subconfigs::PermissionConfig;
-pub use subconfigs::PersistenceConfig;
-pub use subconfigs::PluginConfig;
 pub use subconfigs::SandboxPolicy;
-pub use subconfigs::SkillConfig;
 pub use subconfigs::ToolConfig;
 
 use crate::error::OmnixError;
@@ -69,14 +65,6 @@ pub struct RuntimeConfig {
     pub permissions: PermissionConfig,
     #[serde(default)]
     pub tools: ToolConfig,
-    #[serde(default)]
-    pub skills: SkillConfig,
-    #[serde(default)]
-    pub plugins: PluginConfig,
-    #[serde(default)]
-    pub persistence: PersistenceConfig,
-    #[serde(default)]
-    pub observability: ObservabilityConfig,
 }
 
 impl RuntimeConfig {
@@ -95,12 +83,10 @@ impl RuntimeConfig {
     /// Validate the context-window policy and other invariants.
     pub(crate) fn validate(&self) -> Result<(), OmnixError> {
         let ctx = &self.context;
-        if !(ctx.auto_compact_tokens <= ctx.effective_guardrail_tokens
-            && ctx.effective_guardrail_tokens <= ctx.model_context_tokens)
-        {
+        if ctx.auto_compact_tokens > ctx.model_context_tokens {
             return Err(OmnixError::new(
                 OmnixErrorKind::InvalidConfig,
-                "context policy must satisfy auto_compact <= effective_guardrail <= model_context",
+                "context policy must satisfy auto_compact <= model_context",
             ));
         }
         if self.model.model.trim().is_empty() {
@@ -126,6 +112,7 @@ impl RuntimeConfig {
         base_instructions: Option<String>,
         developer_instructions: Option<String>,
         tool_invoker: Option<std::sync::Arc<dyn omnix_runtime::ToolInvoker>>,
+        process: Option<omnix_runtime::EmbeddedProcess>,
     ) -> omnix_runtime::RuntimeSpec {
         omnix_runtime::RuntimeSpec {
             scope: self.scope.to_runtime(),
@@ -140,7 +127,6 @@ impl RuntimeConfig {
             },
             context: omnix_runtime::ContextSpec {
                 model_context_tokens: self.context.model_context_tokens,
-                effective_guardrail_tokens: self.context.effective_guardrail_tokens,
                 auto_compact_tokens: self.context.auto_compact_tokens,
             },
             permissions: omnix_runtime::PermissionSpec {
@@ -162,6 +148,7 @@ impl RuntimeConfig {
             base_instructions,
             developer_instructions,
             tool_invoker,
+            process,
         }
     }
 }
@@ -181,10 +168,6 @@ mod tests {
             context: Default::default(),
             permissions: Default::default(),
             tools: Default::default(),
-            skills: Default::default(),
-            plugins: Default::default(),
-            persistence: Default::default(),
-            observability: Default::default(),
         }
     }
 
@@ -194,16 +177,14 @@ mod tests {
         assert_eq!(c.model.model, DEFAULT_MODEL);
         assert_eq!(c.model.base_url, DEFAULT_BASE_URL);
         assert_eq!(c.context.model_context_tokens, 1_000_000);
-        assert_eq!(c.context.effective_guardrail_tokens, 950_000);
         assert_eq!(c.context.auto_compact_tokens, 850_000);
-        assert!(c.persistence.enabled);
         c.validate().expect("default config is valid");
     }
 
     #[test]
     fn rejects_inverted_context_policy() {
         let mut c = app_config();
-        c.context.auto_compact_tokens = 999_999; // > effective guardrail
+        c.context.auto_compact_tokens = 1_000_001;
         let err = c.validate().expect_err("must reject");
         assert_eq!(err.kind(), OmnixErrorKind::InvalidConfig);
     }
@@ -234,7 +215,7 @@ mod tests {
     fn into_spec_carries_credentials_and_provider_selection() {
         let c = app_config();
         let creds = Credentials::from_api_key("sk-secret");
-        let spec = c.into_spec(&creds, Some("sys".into()), None, None);
+        let spec = c.into_spec(&creds, Some("sys".into()), None, None, None);
         assert_eq!(spec.model.api_key, "sk-secret");
         assert_eq!(spec.base_instructions.as_deref(), Some("sys"));
         assert!(matches!(

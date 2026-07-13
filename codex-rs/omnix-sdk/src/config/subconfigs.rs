@@ -10,8 +10,6 @@ use serde::Serialize;
 pub struct ContextConfig {
     /// Raw provider context window.
     pub model_context_tokens: u64,
-    /// Effective input guardrail (below the raw window).
-    pub effective_guardrail_tokens: u64,
     /// Automatic-compaction threshold.
     pub auto_compact_tokens: u64,
 }
@@ -20,7 +18,6 @@ impl Default for ContextConfig {
     fn default() -> Self {
         Self {
             model_context_tokens: 1_000_000,
-            effective_guardrail_tokens: 950_000,
             auto_compact_tokens: 850_000,
         }
     }
@@ -81,45 +78,5 @@ impl Default for ToolConfig {
 impl ToolConfig {
     pub(crate) fn call_timeout(&self) -> Duration {
         Duration::from_millis(self.call_timeout_ms)
-    }
-}
-
-/// Skill loading configuration (reserved; expanded with Business Pack support).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct SkillConfig {
-    /// Whether packaged skills are loaded.
-    pub enabled: bool,
-}
-
-/// Plugin loading configuration (reserved).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct PluginConfig {
-    /// Whether local plugins are loaded.
-    pub enabled: bool,
-}
-
-/// Session persistence configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PersistenceConfig {
-    /// Whether threads persist and can resume (default on).
-    pub enabled: bool,
-}
-
-impl Default for PersistenceConfig {
-    fn default() -> Self {
-        Self { enabled: true }
-    }
-}
-
-/// Observability configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ObservabilityConfig {
-    /// Whether runtime logs are written under `.omnix/logs` (default on).
-    pub logs_enabled: bool,
-}
-
-impl Default for ObservabilityConfig {
-    fn default() -> Self {
-        Self { logs_enabled: true }
     }
 }

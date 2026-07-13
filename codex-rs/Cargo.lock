@@ -9244,7 +9244,6 @@ dependencies = [
 name = "omnix-runtime"
 version = "0.0.0"
 dependencies = [
- "codex-app-server",
  "codex-app-server-client",
  "codex-app-server-protocol",
  "codex-arg0",
@@ -9254,13 +9253,11 @@ dependencies = [
  "codex-model-provider-info",
  "codex-protocol",
  "core_test_support",
- "pretty_assertions",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
- "tokio-util",
  "tracing",
  "wiremock",
 ]
@@ -9271,15 +9268,11 @@ version = "0.0.0"
 dependencies = [
  "core_test_support",
  "omnix-runtime",
- "pretty_assertions",
- "schemars 0.8.22",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
- "tokio-util",
- "tracing",
 ]
 
 [[package]]

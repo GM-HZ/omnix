@@ -11,11 +11,15 @@
 //! use omnix_sdk::{Omnix, Credentials};
 //!
 //! # async fn run() -> Result<(), omnix_sdk::OmnixError> {
-//! let runtime = Omnix::builder()
+//! let process = Omnix::initialize_embedded_process();
+//! let builder = Omnix::builder()
 //!     .application_root("/path/to/app-data")
-//!     .credentials(Credentials::from_api_key("sk-..."))
-//!     .build()
-//!     .await?;
+//!     .credentials(Credentials::from_api_key("sk-..."));
+//! let builder = match process {
+//!     Some(process) => builder.embedded_process(process),
+//!     None => builder,
+//! };
+//! let runtime = builder.build().await?;
 //!
 //! // ... create sessions and run turns (see later phases) ...
 //!
@@ -26,14 +30,19 @@
 //!
 //! Startup requires only a data root and credentials; all other settings use
 //! Runtime 0.0 defaults. No `config.toml` is read. The API key is held in memory
-//! only and never written to disk.
+//! only and never written to disk. A single-binary host should call
+//! [`Omnix::initialize_embedded_process`] before starting its async runtime to
+//! enable built-in command/file tools; host-registered tools and inference do
+//! not depend on that helper dispatch.
 
 mod builder;
 mod config;
 mod error;
 mod error_map;
 mod event;
+mod instruction;
 mod pack;
+mod process;
 mod run;
 mod runtime;
 mod session;
@@ -46,14 +55,10 @@ pub use config::Credentials;
 pub use config::DEFAULT_BASE_URL;
 pub use config::DEFAULT_MODEL;
 pub use config::ModelConfig;
-pub use config::ObservabilityConfig;
 pub use config::PermissionConfig;
-pub use config::PersistenceConfig;
-pub use config::PluginConfig;
 pub use config::RuntimeConfig;
 pub use config::RuntimeScope;
 pub use config::SandboxPolicy;
-pub use config::SkillConfig;
 pub use config::ToolConfig;
 pub use config::WireApi;
 pub use error::Correlation;
@@ -71,8 +76,7 @@ pub use event::Usage;
 pub use pack::BusinessPack;
 pub use pack::InstructionSource;
 pub use pack::PackError;
-pub use pack::PluginSource;
-pub use pack::SkillSource;
+pub use process::EmbeddedProcess;
 pub use run::AgentRun;
 pub use runtime::Capabilities;
 pub use runtime::OmnixRuntime;
@@ -92,6 +96,15 @@ pub use tools::ToolSpecification;
 pub struct Omnix;
 
 impl Omnix {
+    /// Initialize helper dispatch for a single-binary embedded host.
+    ///
+    /// Call this at the very beginning of `main`, before creating threads or an
+    /// async runtime, then pass the returned value to
+    /// [`OmnixBuilder::embedded_process`].
+    pub fn initialize_embedded_process() -> Option<EmbeddedProcess> {
+        omnix_runtime::initialize_embedded_process().map(|inner| EmbeddedProcess { inner })
+    }
+
     /// Start building a runtime.
     pub fn builder() -> OmnixBuilder {
         OmnixBuilder::new()

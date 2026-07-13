@@ -74,10 +74,6 @@ async fn tool_call_then_continuation() {
         context: Default::default(),
         permissions: Default::default(),
         tools: Default::default(),
-        skills: Default::default(),
-        plugins: Default::default(),
-        persistence: Default::default(),
-        observability: Default::default(),
     };
     config.model.base_url = server.uri();
     config.model.model = "mock-model".to_string();

@@ -942,6 +942,59 @@ fn assistant_text_without_reasoning_omits_reasoning_content() {
 }
 
 #[test]
+fn developer_message_maps_to_system_for_chat_completions() {
+    let message = ResponseItem::Message {
+        id: None,
+        role: "developer".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "Follow the business methodology.".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+
+    let mapped = super::response_item_to_chat_message(&message, None)
+        .expect("developer message should be preserved");
+
+    assert_eq!(
+        mapped,
+        serde_json::json!({
+            "role": "system",
+            "content": "Follow the business methodology."
+        })
+    );
+}
+
+#[test]
+fn developer_message_preserves_content_part_boundaries() {
+    let message = ResponseItem::Message {
+        id: None,
+        role: "developer".to_string(),
+        content: vec![
+            ContentItem::InputText {
+                text: "First policy.".to_string(),
+            },
+            ContentItem::InputText {
+                text: "Second policy.".to_string(),
+            },
+        ],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+
+    let mapped = super::response_item_to_chat_message(&message, None)
+        .expect("developer message should be preserved");
+
+    assert_eq!(
+        mapped,
+        serde_json::json!({
+            "role": "system",
+            "content": "First policy.\n\nSecond policy."
+        })
+    );
+}
+
+#[test]
 fn standalone_reasoning_item_produces_no_message() {
     let reasoning = ResponseItem::Reasoning {
         id: None,
