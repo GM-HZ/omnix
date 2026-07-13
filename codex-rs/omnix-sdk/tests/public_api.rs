@@ -1,0 +1,71 @@
+//! End-to-end smoke over the PUBLIC `omnix-sdk` API: build a runtime via
+//! `Omnix::builder()` (application root + in-memory credentials, no config.toml),
+//! create a session, run a text turn against a mock Chat Completions provider,
+//! and assert the streamed public `AgentEvent`s.
+
+use core_test_support::chat_completions::cc_text_turn;
+use core_test_support::chat_completions::mount_chat_completions_sequence;
+use core_test_support::chat_completions::start_mock_chat_completions_server;
+use omnix_sdk::AgentEvent;
+use omnix_sdk::Credentials;
+use omnix_sdk::ModelConfig;
+use omnix_sdk::Omnix;
+use omnix_sdk::RuntimeConfig;
+use omnix_sdk::RuntimeScope;
+
+#[tokio::test]
+async fn public_api_runs_a_text_turn() {
+    let server = start_mock_chat_completions_server().await;
+    mount_chat_completions_sequence(&server, vec![cc_text_turn("cc-1", "hi from sdk", 10, 4)])
+        .await;
+
+    let home = tempfile::tempdir().expect("temp dir");
+
+    // A full config so we can point the provider base_url at the mock server.
+    let mut config = RuntimeConfig {
+        scope: RuntimeScope::Application(home.path().to_path_buf()),
+        model: ModelConfig::default(),
+        context: Default::default(),
+        permissions: Default::default(),
+        tools: Default::default(),
+        skills: Default::default(),
+        plugins: Default::default(),
+        persistence: Default::default(),
+        observability: Default::default(),
+    };
+    config.model.base_url = server.uri();
+    config.model.model = "mock-model".to_string();
+
+    let runtime = Omnix::builder()
+        .config(config)
+        .credentials(Credentials::from_api_key("test-key"))
+        .build()
+        .await
+        .expect("runtime builds through the public API");
+
+    let mut session = runtime
+        .sessions()
+        .create(Default::default())
+        .await
+        .expect("session");
+
+    let mut run = session.run("ping").await.expect("run");
+
+    let mut saw_started = false;
+    let mut message = String::new();
+    let mut completed = false;
+    while let Some(event) = run.next().await {
+        match event {
+            AgentEvent::Started { .. } => saw_started = true,
+            AgentEvent::MessageCompleted { text, .. } => message = text,
+            AgentEvent::Completed(_) => completed = true,
+            _ => {}
+        }
+    }
+
+    assert!(saw_started, "should observe a Started event");
+    assert_eq!(message, "hi from sdk");
+    assert!(completed, "run should complete");
+
+    runtime.shutdown().await.expect("shutdown");
+}

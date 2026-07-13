@@ -3,6 +3,7 @@
 In the codex-rs folder where the rust code lives:
 
 - Crate names are prefixed with `codex-`. For example, the `core` folder's crate is named `codex-core`
+  - Exception: the embedded SDK crates `omnix-sdk` and `omnix-runtime` intentionally use the `omnix-` prefix to mark the fork's product identity and public boundary. Business applications depend ONLY on `omnix-sdk`, never on `codex-core`/`codex-app-server*` directly.
 - When using format! and you can inline variables into {}, always do that.
 - Install any commands the repo relies on (for example `just`, `rg`, or `cargo-insta`) if they aren't already available before running instructions here.
 - Never add or modify any code related to `CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR` or `CODEX_SANDBOX_ENV_VAR`.

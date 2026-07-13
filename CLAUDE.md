@@ -172,7 +172,7 @@ The repo builds both via Cargo (local dev) and Bazel (CI, remote execution, rele
 
 See **AGENTS.md** (`codex-rs/` Rust section) for the full convention reference. Key highlights:
 
-- Crate naming: `codex-<name>` prefix
+- Crate naming: `codex-<name>` prefix (exception: the embedded SDK crates `omnix-sdk` and `omnix-runtime` use the `omnix-` prefix; business apps depend only on `omnix-sdk`)
 - Edition: 2024 (workspace-wide default)
 - Clippy is strict (many `deny` lints); run `just fix -p <crate>` before finalizing
 - Collapse if statements, inline format! args, use method references over closures
