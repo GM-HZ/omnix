@@ -2548,6 +2548,11 @@ fn response_item_to_chat_message(
                 let msg = OmnixMessage::user_parts(parts);
                 serde_json::to_value(&msg).ok()
             } else {
+                let separator = if matches!(role.as_str(), "system" | "developer") {
+                    "\n\n"
+                } else {
+                    ""
+                };
                 let text: String = content
                     .iter()
                     .filter_map(|c| match c {
@@ -2557,9 +2562,13 @@ fn response_item_to_chat_message(
                         ContentItem::InputImage { .. } => None,
                     })
                     .collect::<Vec<_>>()
-                    .join("");
+                    .join(separator);
                 let msg = match role.as_str() {
                     "system" => OmnixMessage::system(text),
+                    // DeepSeek's Chat Completions schema does not expose the
+                    // newer OpenAI `developer` role. Preserve its instruction
+                    // priority by encoding it as an additional system message.
+                    "developer" => OmnixMessage::system(text),
                     "user" => OmnixMessage::user_text(text),
                     // Reattach the reasoning that preceded this assistant turn so
                     // DeepSeek thinking mode accepts follow-up requests. Plain

@@ -1,0 +1,34 @@
+[package]
+name = "omnix-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "omnix_runtime"
+path = "src/lib.rs"
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+codex-app-server-client = { workspace = true }
+codex-app-server-protocol = { workspace = true }
+codex-arg0 = { workspace = true }
+codex-config = { workspace = true }
+codex-core = { workspace = true }
+codex-feedback = { workspace = true }
+codex-model-provider-info = { workspace = true }
+codex-protocol = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time", "rt", "macros"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+core_test_support = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+wiremock = { workspace = true }
