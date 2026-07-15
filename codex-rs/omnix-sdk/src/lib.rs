@@ -21,7 +21,20 @@
 //! };
 //! let runtime = builder.build().await?;
 //!
-//! // ... create sessions and run turns (see later phases) ...
+//! let mut session = runtime.sessions().create(Default::default()).await?;
+//! let schema = serde_json::json!({
+//!     "type": "object",
+//!     "properties": { "summary": { "type": "string" } },
+//!     "required": ["summary"],
+//!     "additionalProperties": false
+//! });
+//! let mut run = session
+//!     .run_with_config(
+//!         "Summarize the source as JSON.",
+//!         omnix_sdk::RunConfig::json(schema),
+//!     )
+//!     .await?;
+//! while run.next().await.is_some() {}
 //!
 //! runtime.shutdown().await?;
 //! # Ok(())
@@ -34,6 +47,11 @@
 //! [`Omnix::initialize_embedded_process`] before starting its async runtime to
 //! enable built-in command/file tools; host-registered tools and inference do
 //! not depend on that helper dispatch.
+//!
+//! DeepSeek JSON Output guarantees a syntactically valid JSON object. A schema
+//! supplied through [`RunConfig`] is bounded model guidance, not provider-side
+//! strict validation; applications must validate the result before committing
+//! business data.
 
 mod builder;
 mod config;
@@ -78,6 +96,7 @@ pub use pack::InstructionSource;
 pub use pack::PackError;
 pub use process::EmbeddedProcess;
 pub use run::AgentRun;
+pub use run::RunConfig;
 pub use runtime::Capabilities;
 pub use runtime::OmnixRuntime;
 pub use runtime::RuntimeHealth;

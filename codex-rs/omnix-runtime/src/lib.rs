@@ -40,6 +40,7 @@ pub use run::Run;
 pub use runtime::Capabilities;
 pub use runtime::Runtime;
 pub use runtime::RuntimeHealth;
+pub use session::RunConfig;
 pub use session::Session;
 pub use session::SessionConfig;
 pub use session::SessionMetadata;

@@ -112,6 +112,8 @@ use crate::chat_completions_observability::observe_request_layout;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
+use crate::context::ContextualUserFragment;
+use crate::context::JsonOutputSchemaInstructions;
 use crate::feedback_tags;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::subagent_header_value;
@@ -908,7 +910,7 @@ impl ModelClient {
 
         let mut messages: Vec<serde_json::Value> = Vec::new();
 
-        // System message from instructions
+        // System message from instructions.
         let instructions = &prompt.base_instructions.text;
         if !instructions.is_empty() {
             let sys_msg = OmnixMessage::system(instructions.clone());
@@ -936,6 +938,20 @@ impl ModelClient {
             let reasoning_for_item = pending_reasoning.take();
             if let Some(msg_val) = response_item_to_chat_message(&item, reasoning_for_item) {
                 messages.push(msg_val);
+            }
+        }
+
+        // Append bounded JSON guidance after the stable conversation prefix.
+        // DeepSeek guarantees valid JSON syntax in JSON mode, while the schema
+        // remains model guidance that the host must validate. Oversized schemas
+        // are ignored here to preserve existing app-server behavior; the Omnix
+        // SDK rejects them at its public boundary.
+        if let Some(schema) = &prompt.output_schema
+            && let Some(instructions) = JsonOutputSchemaInstructions::new(schema)
+        {
+            let schema_item: ResponseItem = ContextualUserFragment::into(instructions);
+            if let Some(message) = response_item_to_chat_message(&schema_item, None) {
+                messages.push(message);
             }
         }
 
@@ -1562,6 +1578,10 @@ impl ModelClientSession {
         let client_setup = self.client.current_client_setup().await?;
         let transport = ReqwestTransport::new(build_reqwest_client());
 
+        let json_output_enabled = prompt
+            .output_schema
+            .as_ref()
+            .is_some_and(|schema| JsonOutputSchemaInstructions::new(schema).is_some());
         let request = self
             .client
             .build_chat_completions_request(prompt, model_info)?;
@@ -1614,13 +1634,18 @@ impl ModelClientSession {
             self.client.state.auth_env_telemetry.clone(),
         );
 
+        let options = if client_setup.api_provider.is_deepseek_endpoint() && json_output_enabled {
+            codex_api::ChatCompletionsOptions::json_object()
+        } else {
+            codex_api::ChatCompletionsOptions::default()
+        };
         let client =
             ChatCompletionsClient::new(transport, client_setup.api_provider, client_setup.api_auth)
                 .with_telemetry(Some(request_telemetry));
 
         let headers = ApiHeaderMap::new();
         let api_stream = client
-            .stream_request(request, headers)
+            .stream_request_with_options(request, headers, options)
             .await
             .map_err(|e| self.client.state.provider.map_api_error(e))?;
 

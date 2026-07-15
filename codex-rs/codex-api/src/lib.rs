@@ -111,6 +111,7 @@ pub use crate::search::WeatherOperation;
 pub use crate::telemetry::SseTelemetry;
 pub use crate::telemetry::WebsocketTelemetry;
 pub use chat_completions::ChatCompletionsClient;
+pub use chat_completions::ChatCompletionsOptions;
 pub use chat_completions::ChatCompletionsRequest;
 pub use chat_completions::DeepSeekThinking;
 pub use chat_completions::StreamOptions;

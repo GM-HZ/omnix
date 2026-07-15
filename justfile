@@ -104,7 +104,8 @@ test-deepseek-cache *args:
     $env:RUST_MIN_STACK = "{{ rust_min_stack }}"; cargo nextest run -p codex-core --test live_deepseek_cache --run-ignored ignored-only -j1 --no-capture -E 'test(deepseek_cache_report)' @($args | Select-Object -Skip 1)
 
 # Run the paid embedded-SDK Runtime 0.0 acceptance gate against DeepSeek.
-# Covers reasoning, host tool continuation, cache usage, and session resume.
+# Covers reasoning, host tool continuation, cache usage, session resume, and
+# structured JSON output.
 [unix]
 test-omnix-deepseek *args:
     RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run -p omnix-sdk --test live_deepseek --run-ignored ignored-only -j1 --no-capture "$@"

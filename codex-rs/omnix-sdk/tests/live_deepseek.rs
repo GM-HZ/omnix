@@ -4,6 +4,7 @@ use omnix_sdk::AgentEvent;
 use omnix_sdk::AgentTool;
 use omnix_sdk::Credentials;
 use omnix_sdk::Omnix;
+use omnix_sdk::RunConfig;
 use omnix_sdk::ToolCallContext;
 use omnix_sdk::ToolError;
 use omnix_sdk::ToolOutput;
@@ -129,9 +130,36 @@ async fn deepseek_runtime_0_0_acceptance() {
     .await;
     assert!(second.completed);
     assert!(second.text.contains("RESUME_OK"));
+
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "status": { "type": "string" },
+            "count": { "type": "integer" }
+        },
+        "required": ["status", "count"],
+        "additionalProperties": false
+    });
+    let structured = observe(
+        resumed
+            .run_with_config(
+                "Return JSON with status set to STRUCTURED_OK and count set to 1.",
+                RunConfig::json(schema),
+            )
+            .await
+            .expect("start structured run"),
+    )
+    .await;
+    assert!(structured.completed);
+    let structured_json: serde_json::Value =
+        serde_json::from_str(&structured.text).expect("DeepSeek JSON Output returns valid JSON");
+    assert_eq!(
+        structured_json,
+        serde_json::json!({ "status": "STRUCTURED_OK", "count": 1 })
+    );
     assert!(
-        first.cached_input_tokens > 0 || second.cached_input_tokens > 0,
-        "at least one steady-state request must report a DeepSeek cache hit"
+        structured.cached_input_tokens > 0,
+        "the structured transition must retain a cached conversation prefix"
     );
 
     runtime.shutdown().await.expect("shutdown live runtime");
