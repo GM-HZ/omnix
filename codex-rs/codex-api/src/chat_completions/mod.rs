@@ -4,6 +4,7 @@ pub mod types;
 
 pub use client::ChatCompletionsClient;
 pub use sse_parser::spawn_chat_completions_stream;
+pub use types::ChatCompletionsOptions;
 pub use types::ChatCompletionsRequest;
 pub use types::DeepSeekThinking;
 pub use types::StreamOptions;

@@ -31,6 +31,35 @@ pub struct ChatCompletionsRequest {
     pub thinking: Option<DeepSeekThinking>,
 }
 
+/// Output format supported by the Chat Completions provider.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(crate) enum ChatCompletionsResponseFormat {
+    /// Require the provider to return a syntactically valid JSON object.
+    JsonObject,
+}
+
+/// Optional provider-specific fields for a Chat Completions request.
+///
+/// Keeping these options separate preserves the stable request payload type
+/// while allowing callers to opt into capabilities that are not universally
+/// supported by OpenAI-compatible providers.
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub struct ChatCompletionsOptions {
+    pub(crate) response_format: Option<ChatCompletionsResponseFormat>,
+}
+
+impl ChatCompletionsOptions {
+    /// Require a syntactically valid JSON object from providers that support
+    /// the OpenAI-compatible JSON mode.
+    pub fn json_object() -> Self {
+        Self {
+            response_format: Some(ChatCompletionsResponseFormat::JsonObject),
+        }
+    }
+}
+
 /// DeepSeek thinking/reasoning control.
 /// Maps to the `thinking` field in Chat Completions requests.
 #[derive(Debug, Clone, Serialize)]

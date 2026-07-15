@@ -12,6 +12,7 @@ pub use omnix_runtime::SessionMetadata;
 use crate::error::OmnixError;
 use crate::error_map::map_runtime_error;
 use crate::run::AgentRun;
+use crate::run::RunConfig;
 
 /// Per-session creation options reserved for future additive settings.
 #[derive(Debug, Default, Clone)]
@@ -78,6 +79,21 @@ impl SessionHandle {
     /// Start a run with plain text input, returning the streaming [`AgentRun`].
     pub async fn run(&mut self, input: impl Into<String>) -> Result<AgentRun, OmnixError> {
         let run = self.inner.run(input).await.map_err(map_runtime_error)?;
+        Ok(AgentRun::new(run))
+    }
+
+    /// Start a run with explicit generation options.
+    pub async fn run_with_config(
+        &mut self,
+        input: impl Into<String>,
+        config: RunConfig,
+    ) -> Result<AgentRun, OmnixError> {
+        let config = config.into_runtime()?;
+        let run = self
+            .inner
+            .run_with_config(input, config)
+            .await
+            .map_err(map_runtime_error)?;
         Ok(AgentRun::new(run))
     }
 

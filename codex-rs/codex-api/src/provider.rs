@@ -89,6 +89,10 @@ impl Provider {
         is_azure_responses_provider(&self.name, Some(&self.base_url))
     }
 
+    pub fn is_deepseek_endpoint(&self) -> bool {
+        is_deepseek_provider(&self.name, &self.base_url)
+    }
+
     pub fn websocket_url_for_path(&self, path: &str) -> Result<Url, url::ParseError> {
         let mut url = Url::parse(&self.url_for_path(path))?;
 
@@ -101,6 +105,11 @@ impl Provider {
         let _ = url.set_scheme(scheme);
         Ok(url)
     }
+}
+
+fn is_deepseek_provider(name: &str, base_url: &str) -> bool {
+    name.to_ascii_lowercase().contains("deepseek")
+        || base_url.to_ascii_lowercase().contains("deepseek.com")
 }
 
 pub fn is_azure_responses_provider(name: &str, base_url: Option<&str>) -> bool {
@@ -165,5 +174,18 @@ mod tests {
                 "expected {base_url} not to be detected as Azure"
             );
         }
+    }
+
+    #[test]
+    fn detects_only_deepseek_endpoints_for_deepseek_specific_options() {
+        assert!(!is_deepseek_provider("custom", "https://example.com/v1"));
+        assert!(is_deepseek_provider(
+            "Omnix DeepSeek",
+            "https://example.com/v1"
+        ));
+        assert!(is_deepseek_provider(
+            "custom",
+            "https://api.deepseek.com/v1"
+        ));
     }
 }

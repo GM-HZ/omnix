@@ -44,6 +44,13 @@ use crate::tools::ToolDescriptor;
 #[non_exhaustive]
 pub struct SessionConfig {}
 
+/// Per-run options lowered into one app-server turn.
+#[derive(Debug, Default, Clone)]
+pub struct RunConfig {
+    /// Optional JSON Schema used to guide the final assistant message.
+    pub output_schema: Option<serde_json::Value>,
+}
+
 /// A live agent session bound to one thread.
 pub struct Session {
     request_handle: InProcessAppServerRequestHandle,
@@ -191,6 +198,15 @@ impl Session {
     /// may be active at a time. The guard clears when the previous run reaches a
     /// terminal event or is dropped.
     pub async fn run(&mut self, input: impl Into<String>) -> Result<Run, RuntimeError> {
+        self.run_with_config(input, RunConfig::default()).await
+    }
+
+    /// Start a run with explicit per-turn options.
+    pub async fn run_with_config(
+        &mut self,
+        input: impl Into<String>,
+        config: RunConfig,
+    ) -> Result<Run, RuntimeError> {
         // Claim the single-active-run slot. `swap` returns the previous value;
         // if it was already `true`, another run is in flight.
         if self.active_run.swap(true, Ordering::AcqRel) {
@@ -227,6 +243,7 @@ impl Session {
                 text: input.into(),
                 text_elements: Vec::new(),
             }],
+            output_schema: config.output_schema,
             ..TurnStartParams::default()
         };
         let response: TurnStartResponse = match self

@@ -9266,8 +9266,10 @@ dependencies = [
 name = "omnix-sdk"
 version = "0.0.0"
 dependencies = [
+ "codex-utils-output-truncation",
  "core_test_support",
  "omnix-runtime",
+ "pretty_assertions",
  "serde",
  "serde_json",
  "tempfile",

@@ -8,11 +8,15 @@ use bytes::Bytes;
 use codex_api::ApiError;
 use codex_api::AuthError;
 use codex_api::AuthProvider;
+use codex_api::ChatCompletionsClient;
+use codex_api::ChatCompletionsOptions;
+use codex_api::ChatCompletionsRequest;
 use codex_api::Compression;
 use codex_api::Provider;
 use codex_api::ResponsesApiRequest;
 use codex_api::ResponsesClient;
 use codex_api::ResponsesOptions;
+use codex_api::StreamOptions;
 use codex_client::HttpTransport;
 use codex_client::Request;
 use codex_client::RequestBody;
@@ -42,6 +46,25 @@ fn request_body_bytes(request: &Request) -> &[u8] {
         panic!("expected a prepared request body");
     };
     body.as_bytes()
+}
+
+fn chat_completions_request() -> ChatCompletionsRequest {
+    ChatCompletionsRequest {
+        model: "deepseek-test".to_string(),
+        messages: vec![serde_json::json!({ "role": "user", "content": "hello" })],
+        tools: Vec::new(),
+        tool_choice: None,
+        stream: true,
+        stream_options: Some(StreamOptions {
+            include_usage: true,
+        }),
+        temperature: None,
+        max_tokens: None,
+        parallel_tool_calls: None,
+        enable_thinking: None,
+        thinking_budget: None,
+        thinking: None,
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -144,6 +167,37 @@ fn provider(name: &str) -> Provider {
         },
         stream_idle_timeout: Duration::from_millis(10),
     }
+}
+
+#[tokio::test]
+async fn chat_completions_options_are_additive_to_the_stable_request_body() -> Result<()> {
+    let state = RecordingState::default();
+    let client = ChatCompletionsClient::new(
+        RecordingTransport::new(state.clone()),
+        provider("deepseek"),
+        Arc::new(NoAuth),
+    );
+
+    let _default_stream = client
+        .stream_request(chat_completions_request(), HeaderMap::new())
+        .await?;
+    let _json_stream = client
+        .stream_request_with_options(
+            chat_completions_request(),
+            HeaderMap::new(),
+            ChatCompletionsOptions::json_object(),
+        )
+        .await?;
+
+    let requests = state.take_stream_requests();
+    let default_body: serde_json::Value = serde_json::from_slice(request_body_bytes(&requests[0]))?;
+    let json_body: serde_json::Value = serde_json::from_slice(request_body_bytes(&requests[1]))?;
+    assert_eq!(default_body.get("response_format"), None);
+    assert_eq!(
+        json_body["response_format"],
+        serde_json::json!({ "type": "json_object" })
+    );
+    Ok(())
 }
 
 #[derive(Debug, Default)]

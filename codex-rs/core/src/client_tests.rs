@@ -995,6 +995,98 @@ fn developer_message_preserves_content_part_boundaries() {
 }
 
 #[test]
+fn chat_completions_output_schema_enables_json_output_and_adds_guidance() {
+    let client = test_model_client(SessionSource::Cli);
+    let model_info = test_model_info();
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "summary": { "type": "string" }
+        },
+        "required": ["summary"],
+        "additionalProperties": false
+    });
+    let mut prompt = chat_prompt_with_users("Base policy.", &["Summarize the source."]);
+    prompt.output_schema = Some(schema.clone());
+
+    let request = client
+        .build_chat_completions_request(&prompt, &model_info)
+        .expect("request builds");
+
+    let schema_content = request
+        .messages
+        .iter()
+        .filter_map(|message| message["content"].as_str())
+        .find(|content| content.contains("<json_output_schema>"))
+        .expect("schema guidance message");
+    assert!(schema_content.contains("JSON"));
+    assert!(schema_content.contains(&schema.to_string()));
+    assert_eq!(
+        request.messages.last().expect("schema message")["role"],
+        "user"
+    );
+}
+
+#[test]
+fn chat_completions_without_output_schema_preserves_plain_text_mode() {
+    let client = test_model_client(SessionSource::Cli);
+    let model_info = test_model_info();
+    let prompt = chat_prompt_with_users("Base policy.", &["Answer normally."]);
+
+    let request = client
+        .build_chat_completions_request(&prompt, &model_info)
+        .expect("request builds");
+
+    assert_eq!(request.messages.len(), 2);
+    assert_eq!(request.messages[0]["content"], "Base policy.");
+}
+
+#[test]
+fn chat_completions_output_schema_preserves_the_conversation_cache_prefix() {
+    let client = test_model_client(SessionSource::Cli);
+    let model_info = test_model_info();
+    let plain_prompt = chat_prompt_with_users("Base policy.", &["First turn.", "Second turn."]);
+    let plain = client
+        .build_chat_completions_request(&plain_prompt, &model_info)
+        .expect("plain request builds");
+    let mut structured_prompt = plain_prompt;
+    structured_prompt.output_schema = Some(serde_json::json!({
+        "type": "object",
+        "properties": { "answer": { "type": "string" } }
+    }));
+    let structured = client
+        .build_chat_completions_request(&structured_prompt, &model_info)
+        .expect("structured request builds");
+
+    assert_eq!(
+        &structured.messages[..plain.messages.len()],
+        plain.messages.as_slice()
+    );
+    assert!(
+        structured.messages.last().expect("schema message")["content"]
+            .as_str()
+            .is_some_and(|content| content.contains("<json_output_schema>"))
+    );
+}
+
+#[test]
+fn oversized_chat_completions_output_schema_preserves_legacy_behavior() {
+    let client = test_model_client(SessionSource::Cli);
+    let model_info = test_model_info();
+    let mut prompt = chat_prompt_with_users("Base policy.", &["Answer normally."]);
+    prompt.output_schema = Some(serde_json::json!({
+        "type": "object",
+        "description": "token ".repeat(2_000)
+    }));
+
+    let request = client
+        .build_chat_completions_request(&prompt, &model_info)
+        .expect("oversized schemas remain non-fatal for existing app-server callers");
+
+    assert_eq!(request.messages.len(), 2);
+}
+
+#[test]
 fn standalone_reasoning_item_produces_no_message() {
     let reasoning = ResponseItem::Reasoning {
         id: None,

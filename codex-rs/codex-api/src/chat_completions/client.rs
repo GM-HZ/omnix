@@ -1,5 +1,6 @@
 use crate::auth::SharedAuthProvider;
 use crate::chat_completions::sse_parser::spawn_chat_completions_stream;
+use crate::chat_completions::types::ChatCompletionsOptions;
 use crate::chat_completions::types::ChatCompletionsRequest;
 use crate::common::ResponseStream;
 use crate::endpoint::session::EndpointSession;
@@ -10,6 +11,7 @@ use codex_client::HttpTransport;
 use codex_client::RequestTelemetry;
 use http::HeaderMap;
 use http::Method;
+use serde::Serialize;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::instrument;
@@ -39,7 +41,31 @@ impl<T: HttpTransport> ChatCompletionsClient<T> {
         request: ChatCompletionsRequest,
         extra_headers: HeaderMap,
     ) -> Result<ResponseStream, ApiError> {
-        let body = EncodedJsonBody::encode(&request).map_err(|e| ApiError::InvalidRequest {
+        self.stream_request_with_options(request, extra_headers, ChatCompletionsOptions::default())
+            .await
+    }
+
+    #[instrument(skip_all, fields(model = %request.model))]
+    pub async fn stream_request_with_options(
+        &self,
+        request: ChatCompletionsRequest,
+        extra_headers: HeaderMap,
+        options: ChatCompletionsOptions,
+    ) -> Result<ResponseStream, ApiError> {
+        #[derive(Serialize)]
+        struct RequestBody<'a> {
+            #[serde(flatten)]
+            request: &'a ChatCompletionsRequest,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            response_format:
+                &'a Option<crate::chat_completions::types::ChatCompletionsResponseFormat>,
+        }
+
+        let body = RequestBody {
+            request: &request,
+            response_format: &options.response_format,
+        };
+        let body = EncodedJsonBody::encode(&body).map_err(|e| ApiError::InvalidRequest {
             message: format!("Failed to serialize request: {e}"),
         })?;
 
